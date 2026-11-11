@@ -1064,4 +1064,4 @@ with tab_report:
                 data=pdf_bytes,
                 file_name=f"connext_executive_audit_{urlparse(target_name).netloc}.pdf",
                 mime="application/pdf"
-          
+            )
