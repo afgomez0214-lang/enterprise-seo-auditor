@@ -81,9 +81,9 @@ with st.sidebar:
         gemini_key = st.text_input("Gemini API Key (AI Studio)", type="password")
         
     if google_cloud_key:
-        st.success("✓ Google Cloud Key Connected (CWV/CrUX/NLP/Security)")
+        st.success("✓ Google Cloud Key Connected (PageSpeed/CrUX/SafeBrowsing)")
     else:
-        google_cloud_key = st.text_input("Google Cloud API Key", type="password", help="Powers PageSpeed, Chrome UX (CrUX), Natural Language, and Safe Browsing.")
+        google_cloud_key = st.text_input("Google Cloud API Key", type="password", help="Powers PageSpeed, Chrome UX (CrUX), and Safe Browsing.")
 
     st.markdown("---")
     st.subheader("Crawl Settings")
@@ -114,7 +114,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 with st.expander("📖 Platform Guide, Progress Tracking & Free API Setup Instructions", expanded=False):
     st.markdown("""
     ### 🚀 Recommended Audit & Tracking Workflow
-    1. <span class="step-pill">Step 1</span> **Architecture & Technical Scan (Tab 1):** Enter the target domain (`https://www.csgi.com`) and click **Start Multi-Page Audit**. Audits sitemaps, headings, metadata, alt text, security headers, Google Safe Browsing, and checks `llms.txt`.
+    1. <span class="step-pill">Step 1</span> **Architecture & Technical Scan (Tab 1):** Audit via XML sitemap or enter unique URLs. Apply slug/path filters to isolate specific sections like `/products/` or `/lp/`.
     2. <span class="step-pill">Step 2</span> **AI Keywords (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts** to automatically generate targeted commercial queries.
     3. <span class="step-pill">Step 3</span> **Internal Link Equity (Tab 2):** Crawl content assets to detect orphaned product pages and unoptimized anchors.
     4. <span class="step-pill">Step 4</span> **Cannibalization (Tab 3):** Run TF-IDF cosine similarity to flag conflicting pages (e.g., `/lp/` vs product hubs).
@@ -124,7 +124,8 @@ with st.expander("📖 Platform Guide, Progress Tracking & Free API Setup Instru
     8. <span class="step-pill">Step 8</span> **Core Web Vitals & CrUX (Tab 7):** Measure Mobile Speed, TBT, LCP, and real-world Chrome field user vitals.
     9. <span class="step-pill">Step 9</span> **Progress Tracker (Tab 8):** Export your audit snapshot (`.json`), or upload a previous audit to calculate live progress deltas.
     10. <span class="step-pill">Step 10</span> **Schema Builder (Tab 9):** Build copy-paste `SoftwareApplication`, `Organization`, or `FAQPage` JSON-LD schemas.
-    11. <span class="step-pill">Step 11</span> **Branded Deliverable (Tab 10):** Export the complete executive PDF report.
+    11. <span class="step-pill">Step 11</span> **Executive Dashboard (Tab 10):** View the live Lighthouse/PSI-style health report, opportunities, and prioritized roadmap.
+    12. <span class="step-pill">Step 12</span> **Branded Deliverable (Tab 11):** Export the complete executive PDF report.
     """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -145,20 +146,44 @@ tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_com
 ])
 
 # =============================================================================
-# TAB 1: ARCHITECTURE, SCHEMAS, METADATA, SAFE BROWSING & NLP
+# TAB 1: ARCHITECTURE, SCHEMAS, METADATA, SAFE BROWSING & GEMINI NLP
 # =============================================================================
 with tab_arch:
     st.subheader("Sitemap Discovery, On-Page Metadata, Schemas & Security Audit")
+    
+    # Audit Scope Mode Selection
+    crawl_mode = st.radio(
+        "Select Audit Scope Mode:",
+        ["🌐 XML Sitemap Auto-Discovery", "🎯 Specific / Unique URLs (Direct Audit)"],
+        horizontal=True
+    )
+    
     c1, c2 = st.columns([3, 1])
     with c1:
-        target_site = st.text_input("Target Commercial Domain", value="https://www.csgi.com")
+        if crawl_mode == "🌐 XML Sitemap Auto-Discovery":
+            target_site = st.text_input("Target Commercial Domain", value="https://www.csgi.com")
+            slug_filter = st.text_input(
+                "Filter Sitemaps by Path / Slug / Keyword (Optional)", 
+                value="", 
+                placeholder="e.g. /products/, /solutions/, /lp/, billing, payments"
+            )
+            specific_urls_input = ""
+        else:
+            target_site = st.text_input("Target Domain Root", value="https://www.csgi.com")
+            default_specific = "https://www.csgi.com/products/ascendon\nhttps://www.csgi.com/products/quote-and-order\nhttps://www.csgi.com/solutions/payments"
+            specific_urls_input = st.text_area(
+                "Enter Unique / Specific URLs to Audit (One per line)", 
+                value=default_specific,
+                height=110
+            )
+            slug_filter = ""
     with c2:
         st.write("")
         st.write("")
-        crawl_btn = st.button("🚀 Start Multi-Page Audit", use_container_width=True)
+        crawl_btn = st.button("🚀 Start Audit", use_container_width=True)
 
     if crawl_btn and target_site:
-        with st.spinner("Discovering sitemap, checking security headers, Google Safe Browsing and auditing pages..."):
+        with st.spinner("Executing architecture audit, security check, and content extraction..."):
             parsed = urlparse(target_site)
             root = f"{parsed.scheme}://{parsed.netloc}"
             st.session_state["target_domain"] = target_site
@@ -218,25 +243,32 @@ with tab_arch:
                 has_robots = False
             st.session_state["has_robots"] = has_robots
 
-            # D. Discover URLs from sitemaps
-            found_urls = set()
-            for sm in [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml", f"{root}/sitemap-products.xml"]:
-                try:
-                    r = requests.get(sm, headers=HEADERS, timeout=6)
-                    if r.status_code == 200 and ("xml" in r.headers.get("Content-Type", "") or "<urlset" in r.text):
-                        tree = ET.fromstring(r.content)
-                        for elem in tree.iter():
-                            if elem.tag.endswith("loc") and elem.text and not elem.text.endswith(".xml"):
-                                found_urls.add(elem.text.strip())
-                        if len(found_urls) >= crawl_limit:
-                            break
-                except Exception:
-                    continue
+            # D. URL Pool Construction (Sitemap vs Specific URLs)
+            if crawl_mode == "🎯 Specific / Unique URLs (Direct Audit)":
+                custom_urls = [u.strip() for u in specific_urls_input.split("\n") if u.strip().startswith("http")]
+                url_pool = custom_urls if custom_urls else [target_site]
+            else:
+                found_urls = set()
+                filter_term = slug_filter.strip().lower()
+                for sm in [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml", f"{root}/sitemap-products.xml"]:
+                    try:
+                        r = requests.get(sm, headers=HEADERS, timeout=6)
+                        if r.status_code == 200 and ("xml" in r.headers.get("Content-Type", "") or "<urlset" in r.text):
+                            tree = ET.fromstring(r.content)
+                            for elem in tree.iter():
+                                if elem.tag.endswith("loc") and elem.text and not elem.text.endswith(".xml"):
+                                    loc = elem.text.strip()
+                                    if not filter_term or filter_term in loc.lower():
+                                        found_urls.add(loc)
+                            if len(found_urls) >= crawl_limit:
+                                break
+                    except Exception:
+                        continue
 
-            if not found_urls:
-                found_urls.add(target_site)
+                if not found_urls:
+                    found_urls.add(target_site)
 
-            url_pool = list(found_urls)[:crawl_limit]
+                url_pool = list(found_urls)[:crawl_limit]
 
             # E. Comprehensive On-Page Auditor
             def audit_page(url):
@@ -324,21 +356,27 @@ with tab_arch:
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
 
-            # F. Google Cloud Natural Language API Topic Categorization
-            if google_cloud_key and not df_crawl.empty:
+            # F. Topical Categorization via Gemini API
+            if gemini_key and not df_crawl.empty:
                 try:
-                    sample_text = " ".join(df_crawl["Body_Text"].tolist())[:1800]
-                    nlp_url = f"https://language.googleapis.com/v1/documents:classifyText?key={google_cloud_key}"
-                    nlp_payload = {"document": {"type": "PLAIN_TEXT", "content": sample_text}}
-                    nlp_res = requests.post(nlp_url, json=nlp_payload, timeout=10).json()
-                    st.session_state["nlp_categories"] = [
-                        {"Category": c.get("name"), "Confidence": f"{c.get('confidence', 0)*100:.1f}%"}
-                        for c in nlp_res.get("categories", [])
-                    ]
+                    genai.configure(api_key=gemini_key)
+                    nlp_model = genai.GenerativeModel("gemini-1.5-flash")
+                    sample_text = " ".join(df_crawl["Body_Text"].tolist())[:2500]
+                    nlp_prompt = f"""Analyze this website text and classify it into its top 3-4 standard Google/IAB content taxonomy categories with confidence scores (0-100%).
+Text:
+{sample_text}
+
+Respond strictly in valid JSON format:
+[
+  {{"Category": "/Computers & Electronics/Enterprise Technology/Telecom Solutions", "Confidence": "94%"}}
+]"""
+                    nlp_res = nlp_model.generate_content(nlp_prompt)
+                    clean_nlp = nlp_res.text.strip().replace("```json", "").replace("```", "").strip()
+                    st.session_state["nlp_categories"] = json.loads(clean_nlp)
                 except Exception:
                     st.session_state["nlp_categories"] = []
 
-            st.success(f"✓ Crawled {len(df_crawl)} commercial pages!")
+            st.success(f"✓ Audited {len(df_crawl)} target pages!")
 
     if not st.session_state["df_crawl"].empty:
         df = st.session_state["df_crawl"]
@@ -352,14 +390,37 @@ with tab_arch:
         m4.metric("Security Grade", sec.get("Grade", "N/A"))
         m5.metric("Google Safe Browsing", sb.get("Status", "N/A"))
 
-        # NLP Topical Categorization (Google Cloud NLP API)
+        # NLP Topical Categorization
         if st.session_state.get("nlp_categories"):
-            st.markdown("##### 🧠 Google NLP Topical Understanding (Cloud Natural Language API)")
+            st.markdown("##### 🧠 Topical Taxonomy Understanding (Gemini AI IAB Classification)")
             st.dataframe(pd.DataFrame(st.session_state["nlp_categories"]), use_container_width=True)
 
         st.markdown("#### Technical & Metadata Audit Inventory")
+        
+        # Real-time search & filter bar for the table
+        filter_col1, filter_col2 = st.columns([3, 1])
+        with filter_col1:
+            table_search = st.text_input(
+                "🔍 Search / Filter Table by Slug, URL, or Keyword:",
+                value="",
+                placeholder="Type any word or slug (e.g. ascendon, payments, cpq, /lp/, error...)"
+            )
+        with filter_col2:
+            st.write("")
+            st.write("")
+            
+        display_df = df.copy()
+        if table_search.strip():
+            kw = table_search.strip().lower()
+            display_df = display_df[
+                display_df["URL"].str.lower().str.contains(kw) |
+                display_df["H1_Text"].str.lower().str.contains(kw) |
+                display_df["Schema_Types"].str.lower().str.contains(kw)
+            ]
+            st.caption(f"Showing **{len(display_df)}** of **{len(df)}** crawled URLs matching '{table_search}'")
+            
         st.dataframe(
-            df[["URL", "H1_Count", "Concatenated_H1", "Meta_Desc_Status", "Missing_Alt_Pct", "Has_OG_Tags", "Commercial_Schema", "Word_Count"]],
+            display_df[["URL", "H1_Count", "Concatenated_H1", "Meta_Desc_Status", "Missing_Alt_Pct", "Has_OG_Tags", "Commercial_Schema", "Word_Count"]],
             use_container_width=True
         )
 
@@ -367,7 +428,7 @@ with tab_arch:
         with col_d1:
             st.download_button(
                 label="⬇️ Export Architecture Audit to CSV",
-                data=df.to_csv(index=False),
+                data=display_df.to_csv(index=False),
                 file_name=f"technical_audit_{urlparse(st.session_state['target_domain']).netloc}.csv",
                 mime="text/csv",
                 use_container_width=True
@@ -923,7 +984,7 @@ with tab_cwv:
             st.info(f"CrUX Status: {crux.get('Status', 'No data')}. (Note: Sites need minimum traffic thresholds for Google to log 28-day Chrome user cohorts).")
 
 # =============================================================================
-# TAB 8: AUDIT COMPARISON & PROGRESS TRACKER (NEW FEATURE)
+# TAB 8: AUDIT COMPARISON & PROGRESS TRACKER
 # =============================================================================
 with tab_compare:
     st.subheader("Historical Progress Tracking & Audit Delta Comparator")
@@ -1086,8 +1147,6 @@ with tab_schema_gen:
     st.code(f'<script type="application/ld+json">\n{json_str}\n</script>', language="html")
 
 # =============================================================================
-
-# =============================================================================
 # TAB 10: INTERACTIVE EXECUTIVE DASHBOARD & PSI-STYLE AUDIT REPORT
 # =============================================================================
 with tab_dashboard:
@@ -1232,7 +1291,6 @@ with tab_dashboard:
             {"Priority": "Priority 3 (Growth)", "Initiative": "Editorial Internal Link Remediation", "Action": "Add contextual keyword links from top blog posts to orphaned commercial hubs.", "Effort": "Low (2 days)", "Impact": "Resolves 71.7% orphan rate"}
         ]
         st.dataframe(pd.DataFrame(action_plan_data), use_container_width=True)
-
 
 # =============================================================================
 # TAB 11: CONNEXT BRANDED PDF DELIVERABLE COMPILER
