@@ -35,7 +35,7 @@ st.markdown("""
     .stTabs [aria-selected="true"] { background-color: #004b93 !important; color: white !important; }
     .stButton>button { background-color: #004b93; color: white; font-weight: bold; border-radius: 4px; border: none; }
     .stButton>button:hover { background-color: #e85122; color: white; }
-    .guide-box { background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #004b93; border-radius: 4px; padding: 14px 18px; margin-bottom: 16px; }
+    .guide-box { background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #004b93; border-radius: 4px; padding: 14px 18px; margin-bottom: 16px; font-size: 13px; line-height: 1.5; }
     .step-pill { background: #004b93; color: white; border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: bold; margin-right: 6px; }
     .metric-delta-pos { color: #16a34a; font-weight: bold; }
     .metric-delta-neg { color: #dc2626; font-weight: bold; }
@@ -121,6 +121,22 @@ with st.sidebar:
         st.image(LOGO_URL, width=170)
     except Exception:
         pass
+    
+    st.header("🧹 Data Workspace")
+    if st.button("🧹 Clear All Session Data & Reset", use_container_width=True, help="Wipes all crawling, ranking, AEO, and performance data from memory so you can audit a new domain without combining previous data."):
+        keys_to_clear = [
+            "df_crawl", "df_rankings", "df_aeo", "df_ads", "df_cannibal",
+            "df_equity", "suggested_organic_kws", "suggested_aeo_prompts",
+            "df_organic_suggestions", "df_aeo_suggestions", "detected_industry",
+            "sec_headers", "cwv_metrics", "crux_metrics", "safe_browsing",
+            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain"
+        ]
+        for k in keys_to_clear:
+            st.session_state.pop(k, None)
+        st.success("✓ Workspace reset! Stored cache cleared.")
+        st.rerun()
+
+    st.markdown("---")
     st.header("⚙️ API Configuration")
     
     if serpapi_key:
@@ -166,7 +182,62 @@ if "prev_snapshot" not in st.session_state: st.session_state["prev_snapshot"] = 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 # -----------------------------------------------------------------------------
-# 3. WORKSPACE TABS
+# 3. END-TO-END MASTER OPERATIONAL GUIDE
+# -----------------------------------------------------------------------------
+with st.expander("📘 Master Operational Guide: End-to-End Platform Playbook (Click to Expand)", expanded=False):
+    st.markdown("""
+    ### 🗺️ The Complete Enterprise Audit Workflow: From Setup to PDF Deliverable
+
+    Welcome to the **Connext Enterprise Digital & AEO Auditor**. Follow this step-by-step master sequence to execute an audit for any enterprise commercial entity:
+
+    ---
+    #### ⚙️ Stage 1: API Connections & Clean Workspace Initialization
+    1. **Connect Free Engine Keys:** In the left sidebar, ensure your API keys are loaded. 
+       - `SerpApi`: Powers live Google Organic Rankings (Tab 4), Generative AI Overviews (Tab 5), and Google Ads Transparency Center ad creatives (Tab 6).
+       - `Gemini AI`: Powers dynamic topical IAB categorization and the 60+ commercial keyword matrix (Tab 1).
+       - `Google Cloud`: Powers PageSpeed Insights, Chrome UX Report (CrUX), Google Safe Browsing, and Knowledge Graph Search.
+    2. **Avoid Blending Data:** If auditing a new company, click **🧹 Clear All Session Data & Reset** in the sidebar to prevent previous domain metrics from contaminating the new audit.
+
+    ---
+    #### 🌐 Stage 2: Scope Scaffolding, Technical Crawl & Accessibility (Tab 1)
+    1. **Choose Scope Mode:**
+       - **XML Sitemap Auto-Discovery:** Enter root domain (e.g. `https://www.csgi.com`). Optionally specify a path or slug filter (e.g. `/products/`, `/solutions/`, `/lp/`, or `billing`) to crawl only high-value leaf pages.
+       - **Specific / Unique URLs:** Paste exact individual URLs into the text area to execute targeted diagnostics on campaign landing pages or specific product hubs.
+    2. **Execute Crawl:** Click **🚀 Start Audit**. The multi-threaded engine evaluates:
+       - **Architecture & Headings:** Scans H1 hierarchy and catches word-concatenation bugs (e.g., `poweredCPQ`).
+       - **Structured Schemas:** Identifies `Product`, `SoftwareApplication`, and `Service` JSON-LD scripts.
+       - **Perimeter Edge Security:** Verifies HSTS, Content Security Policy (CSP), and clickjacking headers.
+       - **Web Accessibility (WCAG 2.1 AA):** Inspects `lang` attributes, mobile `viewport`, missing image `alt` tags, vague link text ("click here"), and unlabeled buttons.
+       - **AI Index Standard (`llms.txt`):** Verifies if `domain.com/llms.txt` serves Markdown for AI bots (or flags 404).
+       - **Topical Understanding:** Uses Gemini AI to classify content into standard Google/IAB industry categories.
+
+    ---
+    #### ⚡ Stage 3: Automated Search Keyword & AEO Matrix Discovery (Tab 1)
+    1. **Click 🤖 Generate 60+ AI Keywords & AEO Prompts:** Gemini reads the crawled product catalog and derives 35+ search queries across 3 buyer intents (Commercial, Pain-Point, Competitor) and 30+ consultative AEO prompts for AI search engines.
+    2. **Auto-Populated Downstream:** These queries immediately populate into Tab 4 (SERP) and Tab 5 (AEO), and can be downloaded as structured CSV files.
+
+    ---
+    #### 🔍 Stage 4: Deep Diagnostics & Forensic Intelligence (Tabs 2–7)
+    1. **Tab 2 (Internal Link Equity):** Crawls the blog archive to discover if commercial hubs are orphaned (0 links) or receive unoptimized paragraph-long CTA card anchors.
+    2. **Tab 3 (Cannibalization):** Runs TF-IDF Cosine Similarity across page copy to detect overlapping landing pages competing against organic product hubs (e.g., `/lp/` vs. `/products/`).
+    3. **Tab 4 (Organic SERP Tracker):** Benchmarks live positions on Google Search across target buyer queries and calculates the **% Invisibility Rate**.
+    4. **Tab 5 (Generative AEO):** Queries Google AI Overviews to check if the brand is cited or if competitors win the generative answer.
+    5. **Tab 6 (Paid Ads Intel):** Pulls active creatives from Google Ads Transparency Center to reveal competitors conquesting brand keywords.
+    6. **Tab 7 (Web Vitals & CrUX):** Executes Lighthouse mobile lab tests and queries 28-day real-world Chrome user field vitals (LCP, INP, CLS).
+
+    ---
+    #### 🔄 Stage 5: Benchmarking Progress & Deploying Fixes (Tabs 8–9)
+    1. **Tab 8 (Progress Tracker):** Click **💾 Download Current Audit Snapshot (.json)** to preserve today's baseline. Later, upload a previous snapshot to calculate automated **$\Delta$ progress deltas** (+% schema coverage, -% invisibility).
+    2. **Tab 9 (Schema Builder):** Generate copy-paste `SoftwareApplication`, `Service`, `Organization`, or `FAQPage` JSON-LD code for engineering.
+
+    ---
+    #### 📊 Stage 6: Executive Presentation & PDF Delivery (Tabs 10–11)
+    1. **Tab 10 (Executive Dashboard):** Inspect the PageSpeed Insights-style scoreboard with 6 color-coded category health rings (Organic Search, Schema Graph, Generative AEO, Mobile Speed, Accessibility, Security). Review critical deficits and the prioritized operational roadmap.
+    2. **Tab 11 (Connext PDF Report):** Click **📑 Compile & Download Branded Executive PDF** to produce a publication-grade, Connext-branded PDF report complete with the DOFA matrix, audit inventory, and action roadmap.
+    """, unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# 4. WORKSPACE TABS
 # -----------------------------------------------------------------------------
 tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_compare, tab_schema_gen, tab_dashboard, tab_report = st.tabs([
     "🌐 1. Tech & Schemas",
@@ -187,6 +258,13 @@ tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_com
 # =============================================================================
 with tab_arch:
     st.subheader("Sitemap Discovery, On-Page Metadata, Schemas & Security Audit")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Audits DOM structure, heading hierarchy, Schema.org JSON-LD scripts, security edge headers, WCAG 2.1 AA accessibility, and the root <code>llms.txt</code> standard.<br>
+        <strong>💼 Enterprise Impact:</strong> Uncovers technical indexation bugs (like concatenated headings), flat schema deficits, and accessibility barriers that trigger search ranking penalties.<br>
+        <strong>🔍 Where to Find Results:</strong> Metric scorecards display domain aggregates; the table below itemizes leaf pages with live keyword filtering; the Gemini card generates 60+ commercial search terms.
+    </div>
+    ''', unsafe_allow_html=True)
     
     crawl_mode = st.radio(
         "Select Audit Scope Mode:",
@@ -287,7 +365,7 @@ with tab_arch:
                     kg_info = {"Recognized": "Check Failed", "Entity_Name": "N/A", "Types": "N/A", "Score": 0, "Description": str(e)}
             st.session_state["kg_info"] = kg_info
 
-            # D. Check llms.txt (Validates HTTP 200, Non-Empty, and NOT Soft-404 HTML) & robots.txt
+            # D. Check llms.txt & robots.txt
             try:
                 llms_r = requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5)
                 has_llms = (
@@ -332,19 +410,23 @@ with tab_arch:
                     found_urls.add(target_site)
                 url_pool = list(found_urls)[:crawl_limit]
 
-            # Audit Single Page Function
+            # F. Comprehensive On-Page, Schema & Accessibility (WCAG 2.1 AA) Auditor
             def audit_page(url):
                 res = {
                     "URL": url, "Status": 0, "H1_Count": 0, "H1_Text": "N/A", "Concatenated_H1": False,
                     "Meta_Title_Length": 0, "Meta_Desc_Length": 0, "Meta_Desc_Status": "Missing",
                     "Missing_Alt_Pct": 0.0, "Has_OG_Tags": False, "Total_Schemas": 0, "Commercial_Schema": False,
-                    "Schema_Types": "None", "Word_Count": 0, "Body_Text": ""
+                    "Schema_Types": "None", "Word_Count": 0, "Body_Text": "",
+                    "HTML_Lang": "Missing", "Meta_Viewport": False, "Vague_Links_Count": 0,
+                    "Unlabeled_Buttons": 0, "Skipped_Headings": False, "A11y_Score": 100
                 }
                 try:
                     r = requests.get(url, headers=HEADERS, timeout=8)
                     res["Status"] = r.status_code
                     if r.status_code == 200:
                         soup = BeautifulSoup(r.text, "html.parser")
+                        
+                        # Headings Analysis
                         h1s = [h.get_text(separator=" ", strip=True) for h in soup.find_all("h1") if h.get_text(strip=True)]
                         res["H1_Count"] = len(h1s)
                         if h1s:
@@ -352,6 +434,12 @@ with tab_arch:
                             if re.search(r'[a-z][A-Z0-9]', h1s[0]):
                                 res["Concatenated_H1"] = True
                         
+                        h2s = soup.find_all("h2")
+                        h3s = soup.find_all("h3")
+                        if len(h1s) > 0 and len(h3s) > 0 and len(h2s) == 0:
+                            res["Skipped_Headings"] = True
+
+                        # Meta Title & Description
                         t_tag = soup.find("title")
                         res["Meta_Title_Length"] = len(t_tag.text.strip()) if t_tag and t_tag.text else 0
                         m_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
@@ -360,13 +448,51 @@ with tab_arch:
                             res["Meta_Desc_Length"] = d_len
                             res["Meta_Desc_Status"] = "Good (120-160)" if 120 <= d_len <= 165 else ("Truncated (>165)" if d_len > 165 else "Too Short (<120)")
                         
+                        # Images Alt Text (WCAG 1.1.1)
                         imgs = soup.find_all("img")
                         if imgs:
                             missing_alt = sum([1 for img in imgs if not img.get("alt") or len(img.get("alt").strip()) == 0])
                             res["Missing_Alt_Pct"] = round((missing_alt / len(imgs)) * 100, 1)
                         
+                        # OpenGraph
                         res["Has_OG_Tags"] = bool(soup.find("meta", property="og:title") and soup.find("meta", property="og:image"))
                         
+                        # Accessibility Checks (WCAG 2.1 AA)
+                        html_tag = soup.find("html")
+                        lang_val = html_tag.get("lang", "").strip() if html_tag else ""
+                        res["HTML_Lang"] = lang_val if lang_val else "Missing"
+                        
+                        meta_vp = soup.find("meta", attrs={"name": "viewport"})
+                        res["Meta_Viewport"] = bool(meta_vp and "width=" in meta_vp.get("content", "").lower())
+                        
+                        vague_terms = {"click here", "read more", "learn more", "more", "here", "view", "details", "link"}
+                        vague_count = 0
+                        for a in soup.find_all("a", href=True):
+                            txt = a.get_text(strip=True).lower()
+                            if txt in vague_terms:
+                                vague_count += 1
+                        res["Vague_Links_Count"] = vague_count
+                        
+                        unlabeled_btns = 0
+                        for b in soup.find_all("button"):
+                            has_txt = bool(b.get_text(strip=True))
+                            has_aria = bool(b.get("aria-label") or b.get("aria-labelledby"))
+                            if not has_txt and not has_aria:
+                                unlabeled_btns += 1
+                        res["Unlabeled_Buttons"] = unlabeled_btns
+                        
+                        # Composite Accessibility Score (0 - 100)
+                        a11y = 100
+                        if res["HTML_Lang"] == "Missing": a11y -= 20
+                        if not res["Meta_Viewport"]: a11y -= 15
+                        a11y -= int(res["Missing_Alt_Pct"] * 0.25)
+                        a11y -= min(15, vague_count * 3)
+                        a11y -= min(15, unlabeled_btns * 4)
+                        if res["Skipped_Headings"]: a11y -= 10
+                        if res["H1_Count"] != 1: a11y -= 5
+                        res["A11y_Score"] = max(10, min(100, a11y))
+
+                        # Schemas
                         scripts = soup.find_all("script", type="application/ld+json")
                         res["Total_Schemas"] = len(scripts)
                         types = []
@@ -384,11 +510,13 @@ with tab_arch:
                                     pass
                         res["Schema_Types"] = ", ".join(sorted(list(set(types)))) if types else "None"
                         
+                        # Body text
                         body = soup.body.get_text(separator=" ", strip=True) if soup.body else ""
                         res["Word_Count"] = len(body.split())
                         res["Body_Text"] = body[:2500]
                 except Exception:
                     res["Status"] = 500
+                    res["A11y_Score"] = 40
                 return res
 
             with ThreadPoolExecutor(max_workers=8) as ex:
@@ -396,7 +524,6 @@ with tab_arch:
 
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
-            st.session_state["is_thin_site"] = (len(df_crawl) <= 2)
 
             # Topical Categorization via Dynamic Gemini Call
             if gemini_key and not df_crawl.empty:
@@ -425,17 +552,20 @@ Respond strictly in valid JSON format:
         sb = st.session_state.get("safe_browsing", {})
         kg = st.session_state.get("kg_info", {})
         
-        # Severe Thin Site Architecture Callout Alert
-        if len(df) <= 2:
+        is_thin = (len(df) <= 2)
+        avg_a11y = round(df["A11y_Score"].mean()) if "A11y_Score" in df.columns else 100
+        
+        if is_thin:
             st.error(f"🚨 **Critical Architecture Risk: Severe Topical Thinness Detected ({len(df)} page(s) found)**. Websites with only 1–2 pages find it virtually impossible to rank organically or establish topical authority because search engines require dedicated, schema-marked URLs for each distinct solution, service, or buyer use-case. Add dedicated service/solution pages to build ranking authority.")
 
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("Pages Analyzed", len(df), delta="⚠️ Thin Site (<3)" if len(df) <= 2 else "Normal Footprint", delta_color="inverse" if len(df) <= 2 else "normal")
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        m1.metric("Pages Analyzed", len(df), delta="⚠️ Thin Site (<3)" if is_thin else "Healthy Footprint", delta_color="inverse" if is_thin else "normal")
         m2.metric("Commercial Schemas", f"{(df['Commercial_Schema'].sum()/len(df)*100):.1f}%")
         m3.metric("Mashed H1s", f"{df['Concatenated_H1'].sum()} URLs")
-        m4.metric("Security Grade", sec.get("Grade", "N/A"))
-        m5.metric("Safe Browsing", sb.get("Status", "N/A"))
-        m6.metric("llms.txt AI Index", "✓ Active (200)" if st.session_state.get("has_llms") else "🔴 Missing (404)")
+        m4.metric("Accessibility (WCAG)", f"{avg_a11y}/100", delta="Compliant" if avg_a11y >= 85 else "Issues Detected", delta_color="normal" if avg_a11y >= 85 else "inverse")
+        m5.metric("Security Grade", sec.get("Grade", "N/A"))
+        m6.metric("Safe Browsing", sb.get("Status", "N/A"))
+        m7.metric("llms.txt AI Index", "✓ Active (200)" if st.session_state.get("has_llms") else "🔴 Missing (404)")
 
         # Knowledge Graph Verification
         if kg.get("Recognized") and kg.get("Recognized") != "Not Checked":
@@ -470,9 +600,19 @@ Respond strictly in valid JSON format:
             st.caption(f"Showing **{len(display_df)}** of **{len(df)}** crawled URLs matching '{table_search}'")
             
         st.dataframe(
-            display_df[["URL", "H1_Count", "Concatenated_H1", "Meta_Desc_Status", "Missing_Alt_Pct", "Has_OG_Tags", "Commercial_Schema", "Word_Count"]],
+            display_df[["URL", "H1_Count", "Concatenated_H1", "A11y_Score", "Missing_Alt_Pct", "HTML_Lang", "Vague_Links_Count", "Meta_Desc_Status", "Commercial_Schema", "Word_Count"]],
             use_container_width=True
         )
+
+        with st.expander("♿ Web Accessibility (WCAG 2.1 AA) Compliance Diagnostics", expanded=False):
+            st.markdown(f"""
+            * **Domain Average Accessibility Health:** **{avg_a11y}/100**
+            * **HTML Language Declaration:** {sum(df['HTML_Lang'] != 'Missing')} of {len(df)} pages declare valid `<html lang="...">`. (Screen reader requirement).
+            * **Mobile Viewport Tag:** {sum(df['Meta_Viewport'])} of {len(df)} pages enforce responsive zoom and reflow.
+            * **Missing Image Alt Text:** {sum(df['Missing_Alt_Pct'] > 0)} of {len(df)} pages have images with missing alt text attributes.
+            * **Ambiguous Link Text:** {df['Vague_Links_Count'].sum()} instances of non-descriptive links ("click here", "read more") flagged across the site.
+            * **Unlabeled Interactive Buttons:** {df['Unlabeled_Buttons'].sum()} buttons without accessible text or `aria-label`.
+            """)
 
         st.markdown("##### 📊 Commercial Schema Implementation Breakdown")
         schema_breakdown = pd.DataFrame({
@@ -657,7 +797,13 @@ Format response strictly in valid JSON without backticks:
 # =============================================================================
 with tab_equity:
     st.subheader("Internal Link Equity Flow & Content Silo Audit")
-    st.write("Audits whether educational articles link back to commercial offerings, flags orphaned hubs, and detects paragraph-long anchor text bugs.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Audits whether high-traffic educational/blog articles pass PageRank and link equity to commercial leaf offerings (<code>/products/</code>, <code>/solutions/</code>).<br>
+        <strong>💼 Enterprise Impact:</strong> Product pages with zero inbound editorial links become <em>orphaned hubs</em>, failing to build organic domain authority. Bloated 30-word card anchors dilute keyword relevance.<br>
+        <strong>🔍 Where to Find Results:</strong> Inspect the distribution bar chart below for Supported vs. Orphaned ratios, and examine the inventory table for exact link counts and anchor texts.
+    </div>
+    ''', unsafe_allow_html=True)
 
     col_eq1, col_eq2 = st.columns([3, 1])
     with col_eq1:
@@ -760,7 +906,13 @@ with tab_equity:
 # =============================================================================
 with tab_cannibal:
     st.subheader("TF-IDF Keyword Cannibalization & Content Overlap Scanner")
-    st.write("Identifies duplicate topic coverage and cannibalization pairs where similarity exceeds 0.40 (such as paid landing pages competing with organic hubs).")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Calculates mathematical TF-IDF Cosine Similarity across page copy to detect keyword cannibalization and topical duplication.<br>
+        <strong>💼 Enterprise Impact:</strong> When a campaign landing page (e.g. <code>/lp/cpq-calculator</code>) has &gt;0.40 similarity with an organic product hub, Google splits authority between both URLs, knocking both off Page 1.<br>
+        <strong>🔍 Where to Find Results:</strong> Flagged pairs appear in the severity bar chart and data table. Any comparison pair with &gt;0.60 similarity requires immediate canonicalization or <code>noindex</code> tags.
+    </div>
+    ''', unsafe_allow_html=True)
 
     if st.session_state["df_crawl"].empty:
         st.info("Run the crawl in Tab 1 first to scan page content for cannibalization.")
@@ -815,7 +967,13 @@ with tab_cannibal:
 # =============================================================================
 with tab_serp:
     st.subheader("Live Google Organic Search Rank Benchmark")
-    st.write("Track search engine positioning across high-intent commercial terms using SerpApi.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Queries live Google Search results in real-time across high-intent transactional buyer queries (Positions 1–20) via SerpApi.<br>
+        <strong>💼 Enterprise Impact:</strong> Measures whether enterprise software buyers find your solutions when actively evaluating vendors or if niche competitors capture 100% of commercial search traffic.<br>
+        <strong>🔍 Where to Find Results:</strong> View the <strong>% Organic Invisibility Rate</strong> metric, inspect the positioning tier distribution chart, and review the live competitor table below.
+    </div>
+    ''', unsafe_allow_html=True)
     
     col_kws, col_action = st.columns([3, 1])
     with col_kws:
@@ -912,7 +1070,13 @@ with tab_serp:
 # =============================================================================
 with tab_aeo:
     st.subheader("Generative Engine Optimization (AEO) & AI Overview Citations")
-    st.write("Benchmark whether generative AI search answers cite your domain or your competitors.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Evaluates live Google AI Overviews on comparative, consultative, and vendor shortlisting prompts to check brand recommendation presence.<br>
+        <strong>💼 Enterprise Impact:</strong> Enterprise decision-makers increasingly consult generative AI engines (ChatGPT, Google AI Overviews, Perplexity) during vendor due diligence. If omitted, competitors win the deal before an RFP is issued.<br>
+        <strong>🔍 Where to Find Results:</strong> The <strong>Competitor Win Rate %</strong> card measures loss rate; the table highlights whether your domain was cited (<code>✓ Yes</code>) or omitted (<code>🔴 Omitted</code>) and lists the winning sources.
+    </div>
+    ''', unsafe_allow_html=True)
 
     col_aeo_in, col_aeo_btn = st.columns([3, 1])
     with col_aeo_in:
@@ -995,7 +1159,13 @@ with tab_aeo:
 # =============================================================================
 with tab_ads:
     st.subheader("Paid Search & Google Ads Transparency Center Audit")
-    st.write("Audit live Google Search Sponsored Ads and Google Ads Transparency Center creatives.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Extracts verified ad creatives directly from Google Ads Transparency Center for any corporate or competitor domain.<br>
+        <strong>💼 Enterprise Impact:</strong> Reveals whether competitors are conquesting your brand terms, exposes their active value propositions, and identifies high-intent transactional search queries where your brand is currently absent.<br>
+        <strong>🔍 Where to Find Results:</strong> The bar chart visualizes creative format allocation (Display vs. Search Text Ads); the table provides creative IDs, active dates, and direct links to live ad previews.
+    </div>
+    ''', unsafe_allow_html=True)
 
     col_ad1, col_ad2 = st.columns([3, 1])
     with col_ad1:
@@ -1059,7 +1229,13 @@ with tab_ads:
 # =============================================================================
 with tab_cwv:
     st.subheader("Mobile Core Web Vitals Lab Diagnostics & CrUX 28-Day Field Data")
-    st.write("Runs Google PageSpeed Insights (Simulated Lab) and Chrome UX Report (Real User 28-Day Field Vitals).")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Benchmarks simulated mobile performance (Lighthouse Lab Data) and queries 28-day real-world user metrics from the Chrome UX Report (CrUX Field Data).<br>
+        <strong>💼 Enterprise Impact:</strong> Total Blocking Time (TBT) above 300ms causes severe mobile input lag. High Largest Contentful Paint (LCP) causes demo request abandonment and hurts Google organic rank.<br>
+        <strong>🔍 Where to Find Results:</strong> Top score ring reflects simulated mobile speed (0–100); metric cards below display lab metrics (TBT, LCP, CLS) alongside real Chrome user field percentiles (p75 LCP, INP, CLS).
+    </div>
+    ''', unsafe_allow_html=True)
 
     col_cwv1, col_cwv2 = st.columns([3, 1])
     with col_cwv1:
@@ -1146,7 +1322,13 @@ with tab_cwv:
 # =============================================================================
 with tab_compare:
     st.subheader("Historical Progress Tracking & Audit Delta Comparator")
-    st.write("Upload a previous audit snapshot (.json) to calculate progress deltas (e.g. +30% schema coverage, -20% invisibility), or export current audit as a baseline.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Generates lightweight JSON audit snapshots and compares them against previous baselines to calculate mathematical improvement deltas ($\Delta$).<br>
+        <strong>💼 Enterprise Impact:</strong> Proves tangible ROI and progress for stakeholders over time (e.g. demonstrating a +45% lift in schema coverage or a -25% drop in organic search invisibility).<br>
+        <strong>🔍 Where to Find Results:</strong> Save your current snapshot using the left button, or upload a previous JSON snapshot on the right to unlock an automated delta scorecard with trajectory badges.
+    </div>
+    ''', unsafe_allow_html=True)
 
     col_cmp1, col_cmp2 = st.columns([1, 1])
 
@@ -1238,7 +1420,13 @@ with tab_compare:
 # =============================================================================
 with tab_schema_gen:
     st.subheader("Production Schema.org JSON-LD Generator")
-    st.write("Generate copy-paste schema code for your engineering team to fix the 0% structured data deficit.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Generates validated, production-ready Schema.org JSON-LD structured data code blocks customized for your commercial offerings.<br>
+        <strong>💼 Enterprise Impact:</strong> Resolves the 0% structured schema deficit found on commercial leaf pages, qualifying your site for Google Rich Results and Knowledge Graph entity verification.<br>
+        <strong>🔍 Where to Find Results:</strong> Select an entity type (<code>SoftwareApplication</code>, <code>Organization</code>, <code>Service</code>, <code>FAQPage</code>), fill in offering details, and copy the formatted JSON-LD block below.
+    </div>
+    ''', unsafe_allow_html=True)
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -1298,7 +1486,13 @@ with tab_schema_gen:
 # =============================================================================
 with tab_dashboard:
     st.subheader("Executive Audit Overview & Diagnostics (Lighthouse / PSI Style)")
-    st.write("Comprehensive domain scorecard, categorized findings, automated severity audits, and prioritized remediation roadmap.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Synthesizes all forensic audit findings into a Google PageSpeed Insights / Lighthouse-style diagnostic presentation.<br>
+        <strong>💼 Enterprise Impact:</strong> Translates complex technical DOM, schema, AEO, accessibility, and CWV diagnostics into executive business language with clear operational priorities.<br>
+        <strong>🔍 Where to Find Results:</strong> Review the 6 color-coded health rings at the top, explore the expandable Critical Deficits cards, review institutional strengths, and reference the prioritized roadmap table below.
+    </div>
+    ''', unsafe_allow_html=True)
 
     df_c = st.session_state.get("df_crawl", pd.DataFrame())
     df_r = st.session_state.get("df_rankings", pd.DataFrame())
@@ -1310,7 +1504,6 @@ with tab_dashboard:
     cwv_res = st.session_state.get("cwv_metrics", {})
     sb_res = st.session_state.get("safe_browsing", {})
     kg = st.session_state.get("kg_info", {})
-    has_llms = st.session_state.get("has_llms", False)
 
     if df_c.empty:
         st.info("💡 Run the site audit in Tab 1 (Tech & Schemas) first to populate the Executive Report.")
@@ -1323,39 +1516,43 @@ with tab_dashboard:
         orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty else 71.7
         mashed_count = int(df_c["Concatenated_H1"].sum())
         
-        # Pillar Scores (Caps organic score at 25 if site has <= 2 pages)
         base_seo = max(10, round(100 - (invis_pct * 0.7 + (mashed_count / max(1, total_pages) * 30))))
         score_seo = min(base_seo, 25) if is_thin_site else base_seo
         score_schema = round(schema_pct)
         score_aeo = min(max(5, round(100 - aeo_loss_pct)), 30 if is_thin_site else 100)
         score_cwv = cwv_res.get("Score", 68) if cwv_res.get("Score") != "N/A" else 68
         score_sec = 95 if "A" in sec_res.get("Grade", "A") else (75 if "B" in sec_res.get("Grade", "") else 45)
+        score_a11y = round(df_c["A11y_Score"].mean()) if "A11y_Score" in df_c.columns else 85
 
         def badge_color(score):
             return "#16a34a" if score >= 90 else ("#f2a900" if score >= 50 else "#dc2626")
 
         st.markdown(f"""
         <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:20px; margin-bottom:20px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px;">
-                <div style="text-align:center; min-width:110px;">
-                    <div style="width:72px; height:72px; border-radius:50%; border:6px solid {badge_color(score_seo)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:22px; font-weight:800; color:{badge_color(score_seo)}; background:white;">{score_seo}</div>
-                    <div style="font-size:12px; font-weight:bold; color:#0f172a; margin-top:6px;">Organic Search</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                <div style="text-align:center; min-width:95px;">
+                    <div style="width:68px; height:68px; border-radius:50%; border:5.5px solid {badge_color(score_seo)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:20px; font-weight:800; color:{badge_color(score_seo)}; background:white;">{score_seo}</div>
+                    <div style="font-size:11px; font-weight:bold; color:#0f172a; margin-top:5px;">Organic Search</div>
                 </div>
-                <div style="text-align:center; min-width:110px;">
-                    <div style="width:72px; height:72px; border-radius:50%; border:6px solid {badge_color(score_schema)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:22px; font-weight:800; color:{badge_color(score_schema)}; background:white;">{score_schema}</div>
-                    <div style="font-size:12px; font-weight:bold; color:#0f172a; margin-top:6px;">Schema Graph</div>
+                <div style="text-align:center; min-width:95px;">
+                    <div style="width:68px; height:68px; border-radius:50%; border:5.5px solid {badge_color(score_schema)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:20px; font-weight:800; color:{badge_color(score_schema)}; background:white;">{score_schema}</div>
+                    <div style="font-size:11px; font-weight:bold; color:#0f172a; margin-top:5px;">Schema Graph</div>
                 </div>
-                <div style="text-align:center; min-width:110px;">
-                    <div style="width:72px; height:72px; border-radius:50%; border:6px solid {badge_color(score_aeo)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:22px; font-weight:800; color:{badge_color(score_aeo)}; background:white;">{score_aeo}</div>
-                    <div style="font-size:12px; font-weight:bold; color:#0f172a; margin-top:6px;">Generative AEO</div>
+                <div style="text-align:center; min-width:95px;">
+                    <div style="width:68px; height:68px; border-radius:50%; border:5.5px solid {badge_color(score_aeo)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:20px; font-weight:800; color:{badge_color(score_aeo)}; background:white;">{score_aeo}</div>
+                    <div style="font-size:11px; font-weight:bold; color:#0f172a; margin-top:5px;">Generative AEO</div>
                 </div>
-                <div style="text-align:center; min-width:110px;">
-                    <div style="width:72px; height:72px; border-radius:50%; border:6px solid {badge_color(score_cwv)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:22px; font-weight:800; color:{badge_color(score_cwv)}; background:white;">{score_cwv}</div>
-                    <div style="font-size:12px; font-weight:bold; color:#0f172a; margin-top:6px;">Mobile Speed</div>
+                <div style="text-align:center; min-width:95px;">
+                    <div style="width:68px; height:68px; border-radius:50%; border:5.5px solid {badge_color(score_cwv)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:20px; font-weight:800; color:{badge_color(score_cwv)}; background:white;">{score_cwv}</div>
+                    <div style="font-size:11px; font-weight:bold; color:#0f172a; margin-top:5px;">Mobile Speed</div>
                 </div>
-                <div style="text-align:center; min-width:110px;">
-                    <div style="width:72px; height:72px; border-radius:50%; border:6px solid {badge_color(score_sec)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:22px; font-weight:800; color:{badge_color(score_sec)}; background:white;">{score_sec}</div>
-                    <div style="font-size:12px; font-weight:bold; color:#0f172a; margin-top:6px;">Security & Edge</div>
+                <div style="text-align:center; min-width:95px;">
+                    <div style="width:68px; height:68px; border-radius:50%; border:5.5px solid {badge_color(score_a11y)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:20px; font-weight:800; color:{badge_color(score_a11y)}; background:white;">{score_a11y}</div>
+                    <div style="font-size:11px; font-weight:bold; color:#0f172a; margin-top:5px;">Accessibility (WCAG)</div>
+                </div>
+                <div style="text-align:center; min-width:95px;">
+                    <div style="width:68px; height:68px; border-radius:50%; border:5.5px solid {badge_color(score_sec)}; display:flex; align-items:center; justify-content:center; margin:0 auto; font-size:20px; font-weight:800; color:{badge_color(score_sec)}; background:white;">{score_sec}</div>
+                    <div style="font-size:11px; font-weight:bold; color:#0f172a; margin-top:5px;">Security & Edge</div>
                 </div>
             </div>
             <div style="margin-top:14px; padding-top:12px; border-top:1px solid #e2e8f0; font-size:13px; color:#64748b; display:flex; justify-content:space-between;">
@@ -1367,14 +1564,14 @@ with tab_dashboard:
 
         st.markdown("#### 📈 Multi-Pillar Performance vs Enterprise Thresholds")
         perf_df = pd.DataFrame({
-            "Current Domain Score": [score_seo, score_schema, score_aeo, score_cwv, score_sec],
-            "Enterprise Target Benchmark": [85, 100, 80, 90, 95]
-        }, index=["Organic Visibility", "Commercial Schema", "Generative AEO", "Mobile Speed", "Security & Edge"])
+            "Current Domain Score": [score_seo, score_schema, score_aeo, score_cwv, score_a11y, score_sec],
+            "Enterprise Target Benchmark": [85, 100, 80, 90, 90, 95]
+        }, index=["Organic Visibility", "Commercial Schema", "Generative AEO", "Mobile Speed", "Accessibility (WCAG)", "Security & Edge"])
         st.bar_chart(perf_df, color=["#e85122", "#004b93"])
 
         st.markdown("### 🔴 Critical Deficits & High-Impact Opportunities")
+        st.write("Addressing these issues will directly lift rankings, AEO citations, and reduce paid media waste.")
 
-        # Opportunity: Severe Thin Site
         if is_thin_site:
             with st.expander(f"🚨 Severe Topical Thinness: Single-Page / Low Page Count Architecture ({total_pages} page(s) detected)", expanded=True):
                 st.markdown(f"""
@@ -1385,6 +1582,14 @@ with tab_dashboard:
                   2. **Keyword Cannibalization on Root:** All target keywords are forced onto the homepage, confusing crawlers as to the primary topic.
                   3. **Schema Void:** You cannot inject distinct `SoftwareApplication`, `Service`, or `Product` schemas for individual offerings.
                 * **Remediation:** Architect a multi-page commercial silo structure immediately: deploy dedicated URLs for each offering (e.g., `/solutions/[offering]`, `/products/[offering]`), create dedicated `/about` and `/contact` pages, and inject individual JSON-LD schemas on each.
+                """)
+
+        if score_a11y < 85:
+            with st.expander(f"⚠️ Web Accessibility & WCAG 2.1 Compliance Deficits ({score_a11y}/100)", expanded=False):
+                st.markdown(f"""
+                * **Impact:** 🟠 **High Priority (WCAG 2.1 AA Compliance & Search Quality Signal)**
+                * **Finding:** Average accessibility score across crawled pages is **{score_a11y}/100**. Common issues detected include missing image alt tags, missing `lang` attributes, and ambiguous link text ('click here' or 'read more').
+                * **Remediation:** Ensure `<html lang="en">` is declared on all templates, enforce descriptive alt text for all images, replace vague link anchors with descriptive keyword phrases, and add `aria-label` attributes to icon-only buttons.
                 """)
 
         with st.expander(f"⚠️ Zero Commercial Structured Data Schemas (Found on {score_schema}% of pages)", expanded=True):
@@ -1408,7 +1613,6 @@ with tab_dashboard:
             * **Remediation:** Rewrite the first 45 words of every commercial solution hub to start with clear, factual definitions.
             """)
 
-        # Opportunity: Dynamic llms.txt Warning (Only shows if llms.txt is genuinely absent)
         if not has_llms:
             with st.expander(f"⚠️ Missing Machine-Readable AI Index ({urlparse(target_name).netloc}/llms.txt Returns 404)", expanded=False):
                 st.markdown(f"""
@@ -1478,7 +1682,13 @@ with tab_dashboard:
 # =============================================================================
 with tab_report:
     st.subheader("Generate Executive Audit PDF Report (Connext Global Identity)")
-    st.write("Compiles all technical crawl metrics, security scores, CrUX field data, comparison deltas, SERP rankings, and AEO data into an executive PDF.")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Objective:</strong> Compiles all technical diagnostics, security grades, WCAG accessibility metrics, CrUX field vitals, DOFA strategic matrix, and action plans into a branded PDF deliverable.<br>
+        <strong>💼 Enterprise Impact:</strong> Provides a polished deliverable ready for executive leadership, board reviews, engineering handoffs, or client presentations.<br>
+        <strong>🔍 Where to Find Results:</strong> Click the button below to compile and download the PDF report.
+    </div>
+    ''', unsafe_allow_html=True)
 
     if st.button("📑 Compile & Download Branded Executive PDF", use_container_width=True):
         with st.spinner("Generating publication-grade PDF deliverable..."):
@@ -1523,7 +1733,6 @@ with tab_report:
                 </div>
                 """
 
-            # Build Dynamic DOFA Items
             d_thin = f"<li><strong>Severe Topical Thinness ({total_pages} page(s)):</strong> Domain lacks dedicated solution leaf pages, making commercial ranking impossible.</li>" if is_thin_flag else ""
             d_llms = "<li>Root llms.txt standard returns 404 error (omits generative AI crawler guidance).</li>" if not has_llms_flag else ""
             f_llms = "<li>Verified /llms.txt standard deployed at root for autonomous AI engine ingestion.</li>" if has_llms_flag else ""
@@ -1569,7 +1778,7 @@ with tab_report:
                     </div>
                 </div>
 
-                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security Grade:</strong> {sec_res.get('Grade', 'N/A')} | <strong>Site Footprint:</strong> {'⚠️ Critical Thinness (' + str(total_pages) + ' page(s))' if is_thin_flag else str(total_pages) + ' Pages'} | <strong>llms.txt:</strong> {'✓ Active (200)' if has_llms_flag else '🔴 Missing (404)'}</p>
+                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security:</strong> {sec_res.get('Grade', 'N/A')} | <strong>Accessibility:</strong> {round(df_c['A11y_Score'].mean()) if not df_c.empty and 'A11y_Score' in df_c.columns else 'N/A'}/100 | <strong>Mobile Score:</strong> {cwv_res.get('Score', 'N/A')}/100 | <strong>llms.txt:</strong> {'✓ Active (200)' if has_llms_flag else '🔴 Missing (404)'}</p>
 
                 {progress_html}
 
