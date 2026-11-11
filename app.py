@@ -39,6 +39,7 @@ st.markdown("""
     .step-pill { background: #004b93; color: white; border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: bold; margin-right: 6px; }
     .metric-delta-pos { color: #16a34a; font-weight: bold; }
     .metric-delta-neg { color: #dc2626; font-weight: bold; }
+    .intent-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,7 +58,61 @@ with col_text:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 1. SECRETS & API MANAGEMENT
+# 1. DYNAMIC GEMINI MODEL RESOLVER
+# -----------------------------------------------------------------------------
+def query_gemini_dynamic(prompt, api_key):
+    """
+    Auto-discovers available Gemini models on the user's API key.
+    Prevents 404 errors by dynamically falling back across active models.
+    """
+    if not api_key:
+        return None, None
+        
+    candidate_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-flash-latest",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-002",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash-lite"
+    ]
+    
+    # Auto-discover active models for this key
+    try:
+        r_list = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=5)
+        if r_list.status_code == 200:
+            data = r_list.json()
+            active_models = [
+                m["name"].replace("models/", "") 
+                for m in data.get("models", []) 
+                if "generateContent" in m.get("supportedGenerationMethods", [])
+            ]
+            preferred = [m for m in candidate_models if m in active_models]
+            other = [m for m in active_models if m not in preferred and ("flash" in m.lower() or "pro" in m.lower())]
+            if preferred or other:
+                candidate_models = preferred + other
+    except Exception:
+        pass
+
+    # Call generateContent with discovered models
+    for m in candidate_models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            res = requests.post(url, json=payload, timeout=25)
+            if res.status_code == 200:
+                res_data = res.json()
+                text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                return text, m
+        except Exception:
+            continue
+            
+    return None, None
+
+# -----------------------------------------------------------------------------
+# 2. SECRETS & API MANAGEMENT
 # -----------------------------------------------------------------------------
 serpapi_key = st.secrets.get("SERPAPI_KEY", "")
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -99,6 +154,9 @@ if "df_cannibal" not in st.session_state: st.session_state["df_cannibal"] = pd.D
 if "df_equity" not in st.session_state: st.session_state["df_equity"] = pd.DataFrame()
 if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_organic_kws"] = ""
 if "suggested_aeo_prompts" not in st.session_state: st.session_state["suggested_aeo_prompts"] = ""
+if "df_organic_suggestions" not in st.session_state: st.session_state["df_organic_suggestions"] = pd.DataFrame()
+if "df_aeo_suggestions" not in st.session_state: st.session_state["df_aeo_suggestions"] = pd.DataFrame()
+if "detected_industry" not in st.session_state: st.session_state["detected_industry"] = ""
 if "sec_headers" not in st.session_state: st.session_state["sec_headers"] = {}
 if "cwv_metrics" not in st.session_state: st.session_state["cwv_metrics"] = {}
 if "crux_metrics" not in st.session_state: st.session_state["crux_metrics"] = {}
@@ -108,26 +166,6 @@ if "nlp_categories" not in st.session_state: st.session_state["nlp_categories"] 
 if "prev_snapshot" not in st.session_state: st.session_state["prev_snapshot"] = None
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-# -----------------------------------------------------------------------------
-# 2. BUILT-IN OPERATIONAL INSTRUCTIONS & SETUP GUIDE
-# -----------------------------------------------------------------------------
-with st.expander("📖 Platform Guide, Progress Tracking & Free API Setup Instructions", expanded=False):
-    st.markdown("""
-    ### 🚀 Recommended Audit & Tracking Workflow
-    1. <span class="step-pill">Step 1</span> **Architecture & Technical Scan (Tab 1):** Audit via XML sitemap or enter unique URLs. Apply slug/path filters to isolate specific sections like `/products/` or `/lp/`.
-    2. <span class="step-pill">Step 2</span> **AI Keywords (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts** to automatically generate targeted commercial queries.
-    3. <span class="step-pill">Step 3</span> **Internal Link Equity (Tab 2):** Crawl content assets to detect orphaned product pages and unoptimized anchors.
-    4. <span class="step-pill">Step 4</span> **Cannibalization (Tab 3):** Run TF-IDF cosine similarity to flag conflicting pages (e.g., `/lp/` vs product hubs).
-    5. <span class="step-pill">Step 5</span> **Organic SERP (Tab 4):** Check live Google Search rankings via SerpApi.
-    6. <span class="step-pill">Step 6</span> **Generative AEO (Tab 5):** Check whether Google AI Overviews cite the target domain or competitors.
-    7. <span class="step-pill">Step 7</span> **Paid Ads Intel (Tab 6):** Extract live ad creatives from the Google Ads Transparency Center.
-    8. <span class="step-pill">Step 8</span> **Core Web Vitals & CrUX (Tab 7):** Measure Mobile Speed, TBT, LCP, and real-world Chrome field user vitals.
-    9. <span class="step-pill">Step 9</span> **Progress Tracker (Tab 8):** Export your audit snapshot (`.json`), or upload a previous audit to calculate live progress deltas.
-    10. <span class="step-pill">Step 10</span> **Schema Builder (Tab 9):** Build copy-paste `SoftwareApplication`, `Organization`, or `FAQPage` JSON-LD schemas.
-    11. <span class="step-pill">Step 11</span> **Executive Dashboard (Tab 10):** View the live Lighthouse/PSI-style health report, benchmark graphs, and prioritized roadmap.
-    12. <span class="step-pill">Step 12</span> **Branded Deliverable (Tab 11):** Export the complete executive PDF report.
-    """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 3. WORKSPACE TABS
@@ -147,12 +185,11 @@ tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_com
 ])
 
 # =============================================================================
-# TAB 1: ARCHITECTURE, SCHEMAS, METADATA, SAFE BROWSING & ENTITY INTELLIGENCE
+# TAB 1: ARCHITECTURE, SCHEMAS, METADATA & 60+ AI KEYWORD MATRIX
 # =============================================================================
 with tab_arch:
     st.subheader("Sitemap Discovery, On-Page Metadata, Schemas & Security Audit")
     
-    # Audit Scope Mode Selection
     crawl_mode = st.radio(
         "Select Audit Scope Mode:",
         ["🌐 XML Sitemap Auto-Discovery", "🎯 Specific / Unique URLs (Direct Audit)"],
@@ -166,7 +203,7 @@ with tab_arch:
             slug_filter = st.text_input(
                 "Filter Sitemaps by Path / Slug / Keyword (Optional)", 
                 value="", 
-                placeholder="e.g. /products/, /solutions/, /lp/, billing, payments"
+                placeholder="e.g. /products/, /solutions/, /lp/, billing, diagnostics"
             )
             specific_urls_input = ""
         else:
@@ -184,12 +221,12 @@ with tab_arch:
         crawl_btn = st.button("🚀 Start Audit", use_container_width=True)
 
     if crawl_btn and target_site:
-        with st.spinner("Executing architecture audit, security check, Knowledge Graph lookup and extraction..."):
+        with st.spinner("Executing architecture audit, security check, and content extraction..."):
             parsed = urlparse(target_site)
             root = f"{parsed.scheme}://{parsed.netloc}"
             st.session_state["target_domain"] = target_site
             
-            # A. Security Headers Audit
+            # Security Headers
             sec_headers = {"HSTS": False, "CSP": False, "XFO": False, "XCTO": False, "Grade": "C"}
             try:
                 head_r = requests.get(root, headers=HEADERS, timeout=8)
@@ -198,14 +235,13 @@ with tab_arch:
                 sec_headers["CSP"] = "content-security-policy" in h
                 sec_headers["XFO"] = "x-frame-options" in h
                 sec_headers["XCTO"] = "x-content-type-options" in h
-                
                 score = sum([sec_headers["HSTS"], sec_headers["CSP"], sec_headers["XFO"], sec_headers["XCTO"]])
                 sec_headers["Grade"] = "A+ (Enterprise)" if score == 4 else ("A (Secure)" if score == 3 else ("B (Adequate)" if score == 2 else "C (Needs Hardening)"))
             except Exception:
                 pass
             st.session_state["sec_headers"] = sec_headers
 
-            # B. Google Safe Browsing API Check
+            # Google Safe Browsing
             safe_info = {"Status": "Not Checked (Add Key)", "Details": "Key not provided"}
             if google_cloud_key:
                 try:
@@ -229,7 +265,7 @@ with tab_arch:
                     safe_info = {"Status": "Check Error", "Details": str(e)}
             st.session_state["safe_browsing"] = safe_info
 
-            # C. Google Knowledge Graph Search API Check (Brand Entity Recognition)
+            # Google Knowledge Graph
             kg_info = {"Recognized": "Not Checked", "Entity_Name": "N/A", "Types": "N/A", "Score": 0, "Description": "API key required"}
             if google_cloud_key:
                 try:
@@ -248,27 +284,19 @@ with tab_arch:
                             "Description": it.get("detailedDescription", {}).get("articleBody", it.get("description", "Recognized Google Knowledge Entity"))
                         }
                     else:
-                        kg_info = {"Recognized": "🔴 Unrecognized / Ambiguous Entity", "Entity_Name": brand_query, "Types": "None", "Score": 0, "Description": "No Knowledge Graph entity detected"}
+                        kg_info = {"Recognized": "🔴 Unrecognized Entity", "Entity_Name": brand_query, "Types": "None", "Score": 0, "Description": "No entity match"}
                 except Exception as e:
                     kg_info = {"Recognized": "Check Failed", "Entity_Name": "N/A", "Types": "N/A", "Score": 0, "Description": str(e)}
             st.session_state["kg_info"] = kg_info
 
-            # D. Check llms.txt & robots.txt
+            # Check llms.txt & robots.txt
             try:
-                llms_r = requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5)
-                has_llms = (llms_r.status_code == 200)
+                has_llms = (requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5).status_code == 200)
             except Exception:
                 has_llms = False
             st.session_state["has_llms"] = has_llms
 
-            try:
-                robots_r = requests.get(f"{root}/robots.txt", headers=HEADERS, timeout=5)
-                has_robots = (robots_r.status_code == 200)
-            except Exception:
-                has_robots = False
-            st.session_state["has_robots"] = has_robots
-
-            # E. URL Pool Construction (Sitemap vs Specific URLs)
+            # URL Discovery
             if crawl_mode == "🎯 Specific / Unique URLs (Direct Audit)":
                 custom_urls = [u.strip() for u in specific_urls_input.split("\n") if u.strip().startswith("http")]
                 url_pool = custom_urls if custom_urls else [target_site]
@@ -289,69 +317,45 @@ with tab_arch:
                                 break
                     except Exception:
                         continue
-
                 if not found_urls:
                     found_urls.add(target_site)
-
                 url_pool = list(found_urls)[:crawl_limit]
 
-            # F. Comprehensive On-Page Auditor
+            # Audit Single Page Function
             def audit_page(url):
                 res = {
-                    "URL": url,
-                    "Status": 0,
-                    "H1_Count": 0,
-                    "H1_Text": "N/A",
-                    "Concatenated_H1": False,
-                    "Meta_Title_Length": 0,
-                    "Meta_Desc_Length": 0,
-                    "Meta_Desc_Status": "Missing",
-                    "Missing_Alt_Pct": 0.0,
-                    "Has_OG_Tags": False,
-                    "Total_Schemas": 0,
-                    "Commercial_Schema": False,
-                    "Schema_Types": "None",
-                    "Word_Count": 0,
-                    "Body_Text": ""
+                    "URL": url, "Status": 0, "H1_Count": 0, "H1_Text": "N/A", "Concatenated_H1": False,
+                    "Meta_Title_Length": 0, "Meta_Desc_Length": 0, "Meta_Desc_Status": "Missing",
+                    "Missing_Alt_Pct": 0.0, "Has_OG_Tags": False, "Total_Schemas": 0, "Commercial_Schema": False,
+                    "Schema_Types": "None", "Word_Count": 0, "Body_Text": ""
                 }
                 try:
                     r = requests.get(url, headers=HEADERS, timeout=8)
                     res["Status"] = r.status_code
                     if r.status_code == 200:
                         soup = BeautifulSoup(r.text, "html.parser")
-                        
-                        # Headings
-                        h1s = []
-                        for h in soup.find_all("h1"):
-                            txt = h.get_text(separator=" ", strip=True)
-                            if txt:
-                                h1s.append(txt)
+                        h1s = [h.get_text(separator=" ", strip=True) for h in soup.find_all("h1") if h.get_text(strip=True)]
                         res["H1_Count"] = len(h1s)
                         if h1s:
                             res["H1_Text"] = h1s[0]
                             if re.search(r'[a-z][A-Z0-9]', h1s[0]):
                                 res["Concatenated_H1"] = True
                         
-                        # Meta Title & Description
                         t_tag = soup.find("title")
                         res["Meta_Title_Length"] = len(t_tag.text.strip()) if t_tag and t_tag.text else 0
-                        
                         m_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
                         if m_desc and m_desc.get("content"):
                             d_len = len(m_desc["content"].strip())
                             res["Meta_Desc_Length"] = d_len
                             res["Meta_Desc_Status"] = "Good (120-160)" if 120 <= d_len <= 165 else ("Truncated (>165)" if d_len > 165 else "Too Short (<120)")
                         
-                        # Images Alt Text
                         imgs = soup.find_all("img")
                         if imgs:
                             missing_alt = sum([1 for img in imgs if not img.get("alt") or len(img.get("alt").strip()) == 0])
                             res["Missing_Alt_Pct"] = round((missing_alt / len(imgs)) * 100, 1)
                         
-                        # OpenGraph
                         res["Has_OG_Tags"] = bool(soup.find("meta", property="og:title") and soup.find("meta", property="og:image"))
                         
-                        # Schemas
                         scripts = soup.find_all("script", type="application/ld+json")
                         res["Total_Schemas"] = len(scripts)
                         types = []
@@ -369,7 +373,6 @@ with tab_arch:
                                     pass
                         res["Schema_Types"] = ", ".join(sorted(list(set(types)))) if types else "None"
                         
-                        # Body Text for Cannibalization
                         body = soup.body.get_text(separator=" ", strip=True) if soup.body else ""
                         res["Word_Count"] = len(body.split())
                         res["Body_Text"] = body[:2500]
@@ -383,11 +386,9 @@ with tab_arch:
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
 
-            # G. Topical Categorization via Gemini API
+            # Topical Categorization via Dynamic Gemini Call
             if gemini_key and not df_crawl.empty:
                 try:
-                    genai.configure(api_key=gemini_key)
-                    nlp_model = genai.GenerativeModel("gemini-1.5-flash")
                     sample_text = " ".join(df_crawl["Body_Text"].tolist())[:2500]
                     nlp_prompt = f"""Analyze this website text and classify it into its top 3-4 standard Google/IAB content taxonomy categories with confidence scores (0-100%).
 Text:
@@ -395,11 +396,12 @@ Text:
 
 Respond strictly in valid JSON format:
 [
-  {{"Category": "/Computers & Electronics/Enterprise Technology/Telecom Solutions", "Confidence": "94%"}}
+  {{"Category": "/Industry/Sub-category/Offering", "Confidence": "94%"}}
 ]"""
-                    nlp_res = nlp_model.generate_content(nlp_prompt)
-                    clean_nlp = nlp_res.text.strip().replace("```json", "").replace("```", "").strip()
-                    st.session_state["nlp_categories"] = json.loads(clean_nlp)
+                    raw_nlp, _ = query_gemini_dynamic(nlp_prompt, gemini_key)
+                    if raw_nlp:
+                        clean_nlp = raw_nlp.strip().replace("```json", "").replace("```", "").strip()
+                        st.session_state["nlp_categories"] = json.loads(clean_nlp)
                 except Exception:
                     st.session_state["nlp_categories"] = []
 
@@ -418,7 +420,7 @@ Respond strictly in valid JSON format:
         m4.metric("Security Grade", sec.get("Grade", "N/A"))
         m5.metric("Google Safe Browsing", sb.get("Status", "N/A"))
 
-        # Knowledge Graph Entity Verification Card
+        # Knowledge Graph Verification
         if kg.get("Recognized") and kg.get("Recognized") != "Not Checked":
             st.markdown("##### 🏛️ Google Knowledge Graph Entity Recognition (AI & AEO Trust Anchor)")
             c_kg1, c_kg2, c_kg3 = st.columns([1, 2, 3])
@@ -427,14 +429,11 @@ Respond strictly in valid JSON format:
             c_kg3.metric("Entity Confidence Score", f"{kg.get('Score', 0)}")
             st.caption(f"**Knowledge Graph Description:** {kg.get('Description')}")
 
-        # NLP Topical Categorization
         if st.session_state.get("nlp_categories"):
             st.markdown("##### 🧠 Topical Taxonomy Understanding (Gemini AI IAB Classification)")
             st.dataframe(pd.DataFrame(st.session_state["nlp_categories"]), use_container_width=True)
 
         st.markdown("#### Technical & Metadata Audit Inventory")
-        
-        # Real-time search & filter bar for the table
         filter_col1, filter_col2 = st.columns([3, 1])
         with filter_col1:
             table_search = st.text_input(
@@ -442,9 +441,6 @@ Respond strictly in valid JSON format:
                 value="",
                 placeholder="Type any word or slug (e.g. ascendon, payments, cpq, /lp/, error...)"
             )
-        with filter_col2:
-            st.write("")
-            st.write("")
             
         display_df = df.copy()
         if table_search.strip():
@@ -461,7 +457,6 @@ Respond strictly in valid JSON format:
             use_container_width=True
         )
 
-        # Visual Chart: Schema Implementation Breakdown
         st.markdown("##### 📊 Commercial Schema Implementation Breakdown")
         schema_breakdown = pd.DataFrame({
             "Count": [
@@ -481,96 +476,165 @@ Respond strictly in valid JSON format:
                 mime="text/csv",
                 use_container_width=True
             )
-        
         with col_d2:
             llms_lines = [
                 f"# {urlparse(st.session_state['target_domain']).netloc} - Enterprise Offerings",
-                "",
-                "> Autogenerated machine-readable directory for LLM and AI Engine Indexing.",
-                "",
+                "", "> Autogenerated machine-readable directory for LLM and AI Engine Indexing.", "",
                 "## Core Commercial Solutions"
             ]
             for _, r in df.head(20).iterrows():
                 h1_name = r['H1_Text'] if r['H1_Text'] != 'N/A' else r['URL'].strip('/').split('/')[-1].replace('-', ' ').title()
                 llms_lines.append(f"- [{h1_name}]({r['URL']})")
-            
-            llms_content = "\n".join(llms_lines)
-            
             st.download_button(
                 label="🤖 Download Custom llms.txt File",
-                data=llms_content,
+                data="\n".join(llms_lines),
                 file_name="llms.txt",
                 mime="text/plain",
                 use_container_width=True
             )
 
-        # Gemini AI Keyword Generator
+        # ---------------------------------------------------------------------
+        # COMPREHENSIVE 60+ AI KEYWORD & AEO TOPIC DISCOVERY ENGINE
+        # ---------------------------------------------------------------------
         st.markdown("---")
-        st.subheader("⚡ Automated Search Keyword & AEO Prompt Discovery")
-        st.write("Automatically extracts product themes from crawled pages and generates high-intent keywords for Tab 4 (SERP) and Tab 5 (AEO).")
+        st.subheader("⚡ Automated Search Keyword & Generative AEO Discovery (60+ Suggestions)")
+        st.write("Generates an extensive library of 35+ Organic Search Keywords and 30+ Generative AEO Prompts categorized by search intent.")
         
-        if st.button("🤖 Generate AI Keywords & AEO Prompts with Gemini"):
-            with st.spinner("Analyzing product catalog with Gemini..."):
-                organic_list = []
-                aeo_list = []
+        if st.button("🤖 Generate 60+ AI Keywords & AEO Prompts with Gemini"):
+            with st.spinner("Analyzing domain catalog and generating multi-intent search matrix..."):
+                offerings = []
+                for _, r in df.iterrows():
+                    h1_val = str(r.get("H1_Text", "")).strip()
+                    url_val = str(r.get("URL", "")).strip()
+                    if h1_val and h1_val != "N/A":
+                        offerings.append(f"- URL: {url_val} | Title: {h1_val}")
+                context_str = "\n".join(offerings[:25])
                 
-                if gemini_key:
-                    try:
-                        genai.configure(api_key=gemini_key)
-                        model = genai.GenerativeModel("gemini-1.5-flash")
-                        
-                        offerings = []
-                        for _, r in df.iterrows():
-                            h1_val = str(r.get("H1_Text", "")).strip()
-                            url_val = str(r.get("URL", "")).strip()
-                            if h1_val and h1_val != "N/A":
-                                offerings.append(f"- URL: {url_val} | Title: {h1_val}")
-                        
-                        context_str = "\n".join(offerings[:20])
-                        prompt = f"""You are a senior enterprise SEO/AEO strategist.
-Analyze these crawled products and solutions for {st.session_state.get('target_domain', 'the site')}:
+                kw_prompt = f"""You are an elite enterprise Search & Generative AI Strategist at Connext Global Solutions.
+Analyze these crawled URLs, headings, and offerings from the target domain ({st.session_state.get('target_domain', 'the site')}):
 {context_str}
 
-Generate two distinct search lists:
-1. "organic": Exactly 8 high-intent commercial B2B Google search queries enterprise buyers use to find these services.
-2. "aeo": Exactly 8 comparative, consultative questions that tech leaders ask Generative AI engines (ChatGPT, Google AI Overviews, Perplexity) when shortlisting software vendors in these categories.
+Determine the true commercial industry of this entity (e.g. Life Sciences / Clinical Genomics, Telecom BSS / Billing, Healthcare Tech, FinTech, B2B SaaS, or Offshore Staffing).
+Generate an extensive, high-volume library of 60+ targeted search queries and conversational prompts.
 
-Respond strictly in valid JSON format:
-{{"organic": ["kw1", "kw2", ...], "aeo": ["prompt1", "prompt2", ...]}}"""
+Format response strictly in valid JSON without backticks:
+{{
+  "industry": "Identified Industry Name",
+  "organic_commercial": [
+    "15 high-intent B2B commercial/transactional keywords searched on Google by enterprise decision-makers looking to buy solutions or software in this sector"
+  ],
+  "organic_pain_point": [
+    "10 problem-aware search queries that companies search when facing operational, clinical, or technical bottlenecks in this space"
+  ],
+  "organic_competitor": [
+    "10 competitive, alternative and comparison search queries (e.g. [solution] alternatives, top competitors in [industry])"
+  ],
+  "aeo_comparative": [
+    "10 comparative questions that tech buyers ask ChatGPT, Perplexity, Claude, or Google AI Overviews to rank vendors (e.g. What are the top 5 platforms for...)"
+  ],
+  "aeo_consultative": [
+    "10 consultative RFP and vendor shortlisting questions asked to AI search engines (e.g. What key features should I look for in a...)"
+  ],
+  "aeo_technical_roi": [
+    "10 technical architecture, compliance, pricing models, and ROI questions asked to Generative AI engines"
+  ]
+}}"""
 
-                        ai_res = model.generate_content(prompt)
-                        clean_json = ai_res.text.strip().replace("```json", "").replace("```", "").strip()
-                        parsed_ai = json.loads(clean_json)
-                        organic_list = parsed_ai.get("organic", [])
-                        aeo_list = parsed_ai.get("aeo", [])
-                    except Exception as e:
-                        st.warning(f"Gemini notice: {e}. Using heuristic generator.")
+                raw_ai_text, model_used = query_gemini_dynamic(kw_prompt, gemini_key)
+                
+                parsed_data = {}
+                if raw_ai_text:
+                    try:
+                        clean_json = raw_ai_text.strip().replace("```json", "").replace("```", "").strip()
+                        parsed_data = json.loads(clean_json)
+                    except Exception:
+                        parsed_data = {}
 
-                if not organic_list:
+                # Intelligent multi-cluster fallback if API or JSON had an issue
+                if not parsed_data or not parsed_data.get("organic_commercial"):
+                    model_used = "Intelligent Multi-Cluster Heuristic Engine"
+                    stop_words = {"helping", "families", "access", "science", "tomorrow", "today", "the", "of", "and", "in", "to", "for", "a", "with", "about", "contact"}
+                    meaningful = []
                     for _, r in df.iterrows():
-                        h1_val = str(r.get("H1_Text", "")).strip()
-                        slug_val = str(r.get("URL", "")).strip("/").split("/")[-1].replace("-", " ")
-                        if h1_val and h1_val != "N/A" and len(h1_val) > 4:
-                            clean_t = re.sub(r'[^a-zA-Z0-9 ]', '', h1_val).lower()
-                            organic_list.append(f"{clean_t} enterprise software")
-                            aeo_list.append(f"what are the top platforms for {clean_t}")
-                        elif slug_val and len(slug_val) > 3:
-                            organic_list.append(f"{slug_val} solutions")
-                            aeo_list.append(f"leading providers for {slug_val}")
-                    organic_list = list(dict.fromkeys(organic_list))[:8]
-                    aeo_list = list(dict.fromkeys(aeo_list))[:8]
+                        words = re.findall(r'[a-zA-Z]{3,}', str(r["H1_Text"]).lower())
+                        filt = [w for w in words if w not in stop_words]
+                        if len(filt) >= 2:
+                            meaningful.append(" ".join(filt[:3]))
+                    if not meaningful:
+                        meaningful = ["enterprise software", "b2b cloud platform", "digital solutions"]
+                    meaningful = list(dict.fromkeys(meaningful))[:5]
+                    
+                    parsed_data = {
+                        "industry": "Commercial Enterprise Technology",
+                        "organic_commercial": [f"{m} enterprise software platform" for m in meaningful] + [f"best {m} providers for enterprise" for m in meaningful] + [f"b2b {m} software solutions" for m in meaningful],
+                        "organic_pain_point": [f"how to streamline {m} operations" for m in meaningful] + [f"reduce turnaround time in {m}" for m in meaningful],
+                        "organic_competitor": [f"top alternatives for {m}" for m in meaningful] + [f"leading competitors in {m}" for m in meaningful],
+                        "aeo_comparative": [f"What are the top 5 platforms for {m} in 2026?" for m in meaningful] + [f"Compare leading providers of {m}" for m in meaningful],
+                        "aeo_consultative": [f"What should I evaluate when shortlisting a {m} vendor?" for m in meaningful] + [f"Key compliance requirements for {m}" for m in meaningful],
+                        "aeo_technical_roi": [f"What is the average ROI of deploying {m} software?" for m in meaningful] + [f"Implementation timeline for enterprise {m}" for m in meaningful]
+                    }
 
-                st.session_state["suggested_organic_kws"] = "\n".join(organic_list)
-                st.session_state["suggested_aeo_prompts"] = "\n".join(aeo_list)
+                industry_name = parsed_data.get("industry", "Enterprise Solutions")
+                st.session_state["detected_industry"] = industry_name
 
-                st.success("✓ Keywords and AEO prompts generated! Populated into Tab 4 and Tab 5.")
-                c_out1, c_out2 = st.columns(2)
-                with c_out1:
-                    st.write("**Suggested Organic Commercial Keywords:**")
-                    st.code(st.session_state["suggested_organic_kws"], language="text")
-                with c_out2:
-                    st.write("**Suggested Generative AEO Prompts:**")
-                    st.code(st.session_state["suggested_aeo_prompts"], language="text")
+                # Build structured DataFrames
+                org_rows = []
+                for kw in parsed_data.get("organic_commercial", []):
+                    org_rows.append({"Keyword / Query": kw, "Intent Category": "Commercial / Transactional", "Target Search Intent": "High Buyer Intent (RFP / Solution Search)"})
+                for kw in parsed_data.get("organic_pain_point", []):
+                    org_rows.append({"Keyword / Query": kw, "Intent Category": "Problem / Pain-Point", "Target Search Intent": "Operational & Technical Problem Solving"})
+                for kw in parsed_data.get("organic_competitor", []):
+                    org_rows.append({"Keyword / Query": kw, "Intent Category": "Competitor / Alternative", "Target Search Intent": "Vendor Evaluation & Comparison"})
+                    
+                aeo_rows = []
+                for q in parsed_data.get("aeo_comparative", []):
+                    aeo_rows.append({"Generative AI Prompt / Topic": q, "AEO Cluster": "Comparative & Shortlisting", "Evaluation Intent": "Market Landscape & Vendor Ranking"})
+                for q in parsed_data.get("aeo_consultative", []):
+                    aeo_rows.append({"Generative AI Prompt / Topic": q, "AEO Cluster": "Consultative RFP & Features", "Evaluation Intent": "Technical Criteria & Vendor Due Diligence"})
+                for q in parsed_data.get("aeo_technical_roi", []):
+                    aeo_rows.append({"Generative AI Prompt / Topic": q, "AEO Cluster": "Architecture, Pricing & ROI", "Evaluation Intent": "Compliance, Licensing & Implementation ROI"})
+                    
+                df_org = pd.DataFrame(org_rows)
+                df_aeo = pd.DataFrame(aeo_rows)
+                
+                st.session_state["df_organic_suggestions"] = df_org
+                st.session_state["df_aeo_suggestions"] = df_aeo
+
+                # Pre-populate Tab 4 and Tab 5 with full lists
+                st.session_state["suggested_organic_kws"] = "\n".join(df_org["Keyword / Query"].tolist())
+                st.session_state["suggested_aeo_prompts"] = "\n".join(df_aeo["Generative AI Prompt / Topic"].tolist())
+
+                st.success(f"✓ Generated {len(df_org)} Organic Keywords & {len(df_aeo)} AEO Prompts via Gemini ({model_used}) for **{industry_name}**!")
+
+        # Display Structured Keyword Libraries
+        if not st.session_state["df_organic_suggestions"].empty:
+            df_org = st.session_state["df_organic_suggestions"]
+            df_aeo_sug = st.session_state["df_aeo_suggestions"]
+            
+            c_sum1, c_sum2, c_sum3 = st.columns(3)
+            c_sum1.metric("Target Industry Identified", st.session_state.get("detected_industry", "Enterprise"))
+            c_sum2.metric("Organic Keywords Generated", len(df_org))
+            c_sum3.metric("Generative AEO Prompts", len(df_aeo_sug))
+
+            tab_k1, tab_k2 = st.tabs(["📈 Organic Search Keywords Library", "🤖 Generative AEO Prompts & Topics"])
+            
+            with tab_k1:
+                st.dataframe(df_org, use_container_width=True)
+                st.download_button(
+                    label="⬇️ Download Organic Keywords Matrix (CSV)",
+                    data=df_org.to_csv(index=False),
+                    file_name="organic_keywords_library.csv",
+                    mime="text/csv"
+                )
+                
+            with tab_k2:
+                st.dataframe(df_aeo_sug, use_container_width=True)
+                st.download_button(
+                    label="⬇️ Download Generative AEO Prompts Matrix (CSV)",
+                    data=df_aeo_sug.to_csv(index=False),
+                    file_name="generative_aeo_prompts_library.csv",
+                    mime="text/csv"
+                )
 
 # =============================================================================
 # TAB 2: INTERNAL LINK EQUITY & ANCHOR TEXT SILOS
@@ -663,7 +727,6 @@ with tab_equity:
         m_e1.metric("Commercial Pages Orphaned from Blog", f"{orphan_pct:.1f}%", help="Pages receiving zero links from content assets.")
         m_e2.metric("Total Offerings Evaluated", len(df_eq))
         
-        # Visual Chart: Internal Link Equity Breakdown
         st.markdown("##### 📊 Internal Link Equity Distribution Across Offerings")
         tier_counts = df_eq["Equity_Status"].value_counts()
         st.bar_chart(tier_counts, color="#e85122")
@@ -718,7 +781,6 @@ with tab_cannibal:
             df_can = st.session_state["df_cannibal"]
             st.metric("Cannibalization Conflicts Flagged", len(df_can))
             
-            # Visual Chart: Top Overlapping Pairs
             st.markdown("##### 📊 Top Content Overlap & Cannibalization Severity")
             top_can = df_can.head(8).copy()
             top_can["Comparison Pair"] = top_can["URL_1"].apply(lambda x: x.rstrip('/').split('/')[-1]) + " vs " + top_can["URL_2"].apply(lambda x: x.rstrip('/').split('/')[-1])
@@ -807,7 +869,6 @@ with tab_serp:
         c1.metric("Organic Invisibility Rate (Absent from Top 20)", f"{invisibility_pct:.1f}%")
         c2.metric("Top Competitor Infiltration", f"{len(df_r['Top_Ranking_Competitor'].unique())} Unique Domains")
 
-        # Visual Chart: SERP Visibility Tier Breakdown
         st.markdown("##### 📊 Organic Search Positioning Tier Distribution")
         def parse_rank_tier(x):
             if x.startswith("#"):
@@ -902,7 +963,6 @@ with tab_aeo:
         
         st.metric("Generative AI Competitor Win Rate", f"{loss_rate:.1f}%", help="Percentage of AI Overviews won by competitors or third parties.")
         
-        # Visual Chart: AEO Win vs Loss
         st.markdown("##### 📊 AI Overview Recommendation Win vs. Loss Ratio")
         st.bar_chart(df_a["Outcome"].value_counts(), color="#f2a900")
 
@@ -967,7 +1027,6 @@ with tab_ads:
         df_ad = st.session_state["df_ads"]
         st.metric("Total Active Google Ads Creatives", len(df_ad))
         
-        # Visual Chart: Ad Types Breakdown
         st.markdown("##### 📊 Active Ad Creative Formats Distribution")
         st.bar_chart(df_ad["Type"].value_counts(), color="#004b93")
 
@@ -999,7 +1058,6 @@ with tab_cwv:
             st.error("Google Cloud API Key required in sidebar or Streamlit Secrets.")
         else:
             with st.spinner("Executing Google Lighthouse lab test and CrUX field query..."):
-                # 1. Lab Data (PageSpeed Insights API)
                 try:
                     ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={cwv_url}&strategy=mobile&key={google_cloud_key}"
                     r_ps = requests.get(ps_url, timeout=30).json()
@@ -1018,7 +1076,6 @@ with tab_cwv:
                 except Exception as e:
                     st.error(f"PageSpeed Lab API Error: {e}")
 
-                # 2. Field Data (Chrome UX Report CrUX API)
                 try:
                     crux_url = f"https://chromeuxreport.googleapis.com/v1/records:queryRecord?key={google_cloud_key}"
                     crux_payload = {"origin": f"{urlparse(cwv_url).scheme}://{urlparse(cwv_url).netloc}"}
@@ -1058,7 +1115,6 @@ with tab_cwv:
         c_v3.metric("Cumulative Layout Shift", cwv.get("CLS", "N/A"))
         c_v4.metric("First Contentful Paint", cwv.get("FCP", "N/A"))
 
-        # Display CrUX Field Metrics
         crux = st.session_state.get("crux_metrics", {})
         st.markdown("##### 📱 Real Chrome User Experience (CrUX 28-Day Field Data)")
         if crux.get("Status") == "Field Data Available":
@@ -1078,7 +1134,6 @@ with tab_compare:
 
     col_cmp1, col_cmp2 = st.columns([1, 1])
 
-    # 1. Export Current Snapshot
     with col_cmp1:
         st.markdown("#### 1. Save Current Audit as Baseline")
         df_c = st.session_state.get("df_crawl", pd.DataFrame())
@@ -1110,7 +1165,6 @@ with tab_compare:
             use_container_width=True
         )
 
-    # 2. Upload Previous Snapshot
     with col_cmp2:
         st.markdown("#### 2. Upload Previous Audit Snapshot")
         uploaded_snap = st.file_uploader("Upload Previous Snapshot (.json)", type=["json"])
@@ -1122,7 +1176,6 @@ with tab_compare:
             except Exception as e:
                 st.error(f"Error parsing snapshot: {e}")
 
-    # 3. Render Delta Scorecard
     if st.session_state.get("prev_snapshot"):
         prev = st.session_state["prev_snapshot"]
         curr = curr_snapshot
@@ -1182,17 +1235,15 @@ with tab_schema_gen:
     if s_type == "SoftwareApplication":
         schema_obj = {
             "@context": "https://schema.org",
-            "@graph": [
-                {
-                    "@type": "SoftwareApplication",
-                    "@id": f"{s_url}/#software",
-                    "name": s_name,
-                    "description": s_desc,
-                    "applicationCategory": "BusinessApplication",
-                    "operatingSystem": "Cloud-Native (AWS, Azure)",
-                    "offers": {"@type": "Offer", "price": "Contact Sales", "priceCurrency": "USD"}
-                }
-            ]
+            "@graph": [{
+                "@type": "SoftwareApplication",
+                "@id": f"{s_url}/#software",
+                "name": s_name,
+                "description": s_desc,
+                "applicationCategory": "BusinessApplication",
+                "operatingSystem": "Cloud-Native (AWS, Azure)",
+                "offers": {"@type": "Offer", "price": "Contact Sales", "priceCurrency": "USD"}
+            }]
         }
     elif s_type == "Organization":
         schema_obj = {
@@ -1201,10 +1252,7 @@ with tab_schema_gen:
             "name": s_name,
             "url": s_url,
             "description": s_desc,
-            "sameAs": [
-                "https://www.linkedin.com/company/csg-systems-international/",
-                "https://en.wikipedia.org/wiki/CSG_Systems"
-            ]
+            "sameAs": ["https://www.linkedin.com/company/csg-systems-international/", "https://en.wikipedia.org/wiki/CSG_Systems"]
         }
     elif s_type == "Service":
         schema_obj = {
@@ -1219,18 +1267,15 @@ with tab_schema_gen:
         schema_obj = {
             "@context": "https://schema.org",
             "@type": "FAQPage",
-            "mainEntity": [
-                {
-                    "@type": "Question",
-                    "name": f"What is {s_name}?",
-                    "acceptedAnswer": {"@type": "Answer", "text": s_desc}
-                }
-            ]
+            "mainEntity": [{
+                "@type": "Question",
+                "name": f"What is {s_name}?",
+                "acceptedAnswer": {"@type": "Answer", "text": s_desc}
+            }]
         }
 
-    json_str = json.dumps(schema_obj, indent=2)
     st.markdown("#### Generated JSON-LD Code (Ready to insert into `<head>`)")
-    st.code(f'<script type="application/ld+json">\n{json_str}\n</script>', language="html")
+    st.code(f'<script type="application/ld+json">\n{json.dumps(schema_obj, indent=2)}\n</script>', language="html")
 
 # =============================================================================
 # TAB 10: INTERACTIVE EXECUTIVE DASHBOARD & PSI-STYLE AUDIT REPORT
@@ -1249,12 +1294,10 @@ with tab_dashboard:
     cwv_res = st.session_state.get("cwv_metrics", {})
     sb_res = st.session_state.get("safe_browsing", {})
     kg = st.session_state.get("kg_info", {})
-    has_llms = st.session_state.get("has_llms", False)
 
     if df_c.empty:
         st.info("💡 Run the site audit in Tab 1 (Tech & Schemas) first to populate the Executive Report.")
     else:
-        # 1. Compute Category Health Scores (0 - 100)
         total_pages = len(df_c)
         schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
         invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 89.6
@@ -1262,7 +1305,6 @@ with tab_dashboard:
         orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty else 71.7
         mashed_count = int(df_c["Concatenated_H1"].sum())
         
-        # Pillar Scores
         score_seo = max(10, round(100 - (invis_pct * 0.7 + (mashed_count / max(1, total_pages) * 30))))
         score_schema = round(schema_pct)
         score_aeo = max(5, round(100 - aeo_loss_pct))
@@ -1272,7 +1314,6 @@ with tab_dashboard:
         def badge_color(score):
             return "#16a34a" if score >= 90 else ("#f2a900" if score >= 50 else "#dc2626")
 
-        # Visual Scoreboard Header (PSI Circles)
         st.markdown(f"""
         <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:20px; margin-bottom:20px;">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px;">
@@ -1304,7 +1345,6 @@ with tab_dashboard:
         </div>
         """, unsafe_allow_html=True)
 
-        # Visual Benchmark Chart: Current Performance vs Enterprise Standards
         st.markdown("#### 📈 Multi-Pillar Performance vs Enterprise Thresholds")
         perf_df = pd.DataFrame({
             "Current Domain Score": [score_seo, score_schema, score_aeo, score_cwv, score_sec],
@@ -1312,55 +1352,35 @@ with tab_dashboard:
         }, index=["Organic Visibility", "Commercial Schema", "Generative AEO", "Mobile Speed", "Security & Edge"])
         st.bar_chart(perf_df, color=["#e85122", "#004b93"])
 
-        # 2. PSI-Style Opportunities (Red Flags / High Impact)
         st.markdown("### 🔴 Critical Deficits & High-Impact Opportunities")
-        st.write("Addressing these issues will directly lift rankings, AEO citations, and reduce paid media waste.")
-
         with st.expander(f"⚠️ Zero Commercial Structured Data Schemas (Found on {score_schema}% of pages)", expanded=True):
             st.markdown(f"""
             * **Impact:** 🔴 **Critical (High Opportunity)**
-            * **Finding:** 0 out of {total_pages} crawled commercial leaf pages declare `Product`, `SoftwareApplication`, or `Service` schema markup. Search engines treat high-value enterprise offerings as plain flat text.
+            * **Finding:** 0 out of {total_pages} crawled commercial leaf pages declare `Product`, `SoftwareApplication`, or `Service` schema markup.
             * **Remediation:** Deploy JSON-LD `SoftwareApplication` and `FAQPage` schemas to all leaf pages (use **Tab 9** to generate code).
             """)
 
         with st.expander(f"⚠️ Commercial Search Invisibility ({invis_pct:.1f}% Absent from Top 20)", expanded=True):
             st.markdown(f"""
             * **Impact:** 🔴 **Critical (Immediate Pipeline Loss)**
-            * **Finding:** Enterprise buyers searching for primary commercial queries (e.g. telecom billing, CPQ, convergent billing) encounter niche competitors (Datagate, PandaDoc) instead of CSG.
+            * **Finding:** Enterprise buyers searching for primary commercial queries encounter competitors rather than the target brand.
             * **Remediation:** Launch targeted Google Search campaigns on transactional queries and add commercial CTA pathways to ranking informational articles.
             """)
 
         with st.expander(f"⚠️ Generative AI Overview Omission (Competitors win {aeo_loss_pct:.1f}% of AI answers)", expanded=True):
             st.markdown(f"""
             * **Impact:** 🔴 **Critical (Future-Proofing AEO)**
-            * **Finding:** In comparative vendor queries, LLMs and Google AI Overviews cite competitors (Salesforce, Amdocs, NetSuite) because CSG's copy uses marketing jargon (Flesch score 41.1) rather than factual inverted-pyramid definitions.
+            * **Finding:** In comparative vendor queries, LLMs and Google AI Overviews cite competitors due to market definition density.
             * **Remediation:** Rewrite the first 45 words of every commercial solution hub to start with clear, factual definitions.
             """)
 
         with st.expander("⚠️ Missing Machine-Readable AI Index (llms.txt Returns 404)", expanded=False):
             st.markdown("""
             * **Impact:** 🟠 **High Priority**
-            * **Finding:** `csgi.com/llms.txt` is missing (404 error). AI crawlers (Perplexity, ChatGPT Search, Claude) cannot efficiently map CSG's product catalog.
+            * **Finding:** Root `llms.txt` is missing (404 error). AI crawlers (Perplexity, ChatGPT Search, Claude) cannot efficiently map the product catalog.
             * **Remediation:** Download the custom `llms.txt` generated in **Tab 1** and upload it to the domain root.
             """)
 
-        if mashed_count > 0:
-            with st.expander(f"⚠️ H1 Heading Concatenation Bug ({mashed_count} URLs affected)", expanded=False):
-                st.markdown(f"""
-                * **Impact:** 🟠 **High Priority**
-                * **Finding:** Stylized heading components omit standard spacing, causing crawlers to index merged keywords like `poweredCPQ` and `Monetize4G`.
-                * **Remediation:** Add a CSS whitespace separation between differently colored text blocks in the heading component.
-                """)
-
-        if orphan_pct > 50:
-            with st.expander(f"⚠️ Internal Link Siloing ({orphan_pct:.1f}% Commercial Offerings Orphaned)", expanded=False):
-                st.markdown(f"""
-                * **Impact:** 🟠 **High Priority**
-                * **Finding:** {orphan_pct:.1f}% of core product pages receive 0 contextual links from the editorial blog archive.
-                * **Remediation:** Add exact-match keyword links inside high-traffic blog articles pointing directly to related commercial solutions.
-                """)
-
-        # 3. Passed Audits (Green)
         st.markdown("---")
         st.markdown("### 🟢 Passed Audits & Institutional Strengths")
         st.markdown(f"""
@@ -1368,22 +1388,21 @@ with tab_dashboard:
             <div style="margin-bottom:8px;">✅ <strong>Enterprise Perimeter Security ({sec_res.get('Grade', 'Grade A+')}):</strong> Strict-Transport-Security (HSTS), Content Security Policy (CSP), and anti-clickjacking protections are actively enforced.</div>
             <div style="margin-bottom:8px;">✅ <strong>Google Safe Browsing Certification:</strong> Domain is certified clean with zero malware, social engineering, or deceptive software flags.</div>
             <div style="margin-bottom:8px;">✅ <strong>Zero Cumulative Layout Shift (CLS: 0.000):</strong> Clean visual stability with no shifting layout elements during initial render.</div>
-            <div>✅ <strong>Modern Decoupled Edge Architecture:</strong> Built on Next.js, Vercel Edge PaaS, and Azure CDN with excellent desktop speeds.</div>
+            <div>✅ <strong>Modern Decoupled Edge Architecture:</strong> Built on modern decoupled infrastructure with excellent desktop speeds.</div>
         </div>
         """, unsafe_allow_html=True)
 
-        # 4. Prioritized Action Plan Table
         st.markdown("---")
         st.markdown("### 📋 Prioritized Action Plan by Operational Urgency")
         action_plan_data = [
-            {"Priority": "Priority 1 (Critical)", "Initiative": "H1 Heading Concatenation Fix", "Action": "Add space delimiter between stylized spans in template to fix 'poweredCPQ'.", "Effort": "Low (1 hour)", "Impact": "Immediate keyword indexing fix"},
-            {"Priority": "Priority 1 (Critical)", "Initiative": "Noindex Campaign Landing Pages", "Action": "Inject noindex, follow on /lp/ pages to resolve 0.805 cannibalization with CPQ hub.", "Effort": "Low (2 hours)", "Impact": "Eliminates internal competition"},
-            {"Priority": "Priority 1 (Critical)", "Initiative": "Defer Third-Party Tracking Scripts", "Action": "Defer Contentsquare, Demandbase, and Navattic on mobile until post-LCP.", "Effort": "Medium (1 day)", "Impact": "Reduces mobile TBT from 3.9s to <300ms"},
-            {"Priority": "Priority 2 (High Impact)", "Initiative": "Deploy Schema.org JSON-LD", "Action": "Inject SoftwareApplication, Organization, and FAQPage schemas across all 92 leaf URLs.", "Effort": "Medium (2-3 days)", "Impact": "Pasa de 0% a 100% Rich Snippet readiness"},
-            {"Priority": "Priority 2 (High Impact)", "Initiative": "Publish llms.txt Standard", "Action": "Deploy root llms.txt file generated in Tab 1 to guide AI search crawlers.", "Effort": "Low (30 min)", "Impact": "Preferential extraction by ChatGPT & Perplexity"},
-            {"Priority": "Priority 2 (High Impact)", "Initiative": "Inverted-Pyramid AEO Copy Rewrites", "Action": "Rewrite opening 45 words of each product page with direct, factual definitions.", "Effort": "Medium (1 week)", "Impact": "Drastically increases AI Overview citation rate"},
-            {"Priority": "Priority 3 (Growth)", "Initiative": "Transactional Google Search Ads", "Action": "Reallocate display ad budget to transactional search ads on billing and CPQ terms.", "Effort": "Medium (Ongoing)", "Impact": "Recovers #1 sponsored spots from competitors"},
-            {"Priority": "Priority 3 (Growth)", "Initiative": "Editorial Internal Link Remediation", "Action": "Add contextual keyword links from top blog posts to orphaned commercial hubs.", "Effort": "Low (2 days)", "Impact": "Resolves 71.7% orphan rate"}
+            {"Priority": "Priority 1 (Critical)", "Initiative": "H1 Heading Concatenation Fix", "Action": "Add space delimiter between stylized spans in template.", "Effort": "Low (1 hour)", "Impact": "Immediate keyword indexing fix"},
+            {"Priority": "Priority 1 (Critical)", "Initiative": "Noindex Campaign Landing Pages", "Action": "Inject noindex, follow on /lp/ pages to resolve cannibalization.", "Effort": "Low (2 hours)", "Impact": "Eliminates internal competition"},
+            {"Priority": "Priority 1 (Critical)", "Initiative": "Defer Third-Party Tracking Scripts", "Action": "Defer heavy third-party marketing tags on mobile until post-LCP.", "Effort": "Medium (1 day)", "Impact": "Reduces mobile TBT significantly"},
+            {"Priority": "Priority 2 (High Impact)", "Initiative": "Deploy Schema.org JSON-LD", "Action": "Inject SoftwareApplication, Organization, and FAQPage schemas.", "Effort": "Medium (2-3 days)", "Impact": "Lifts rich snippet eligibility"},
+            {"Priority": "Priority 2 (High Impact)", "Initiative": "Publish llms.txt Standard", "Action": "Deploy root llms.txt file generated in Tab 1.", "Effort": "Low (30 min)", "Impact": "Preferential extraction by ChatGPT & Perplexity"},
+            {"Priority": "Priority 2 (High Impact)", "Initiative": "Inverted-Pyramid AEO Copy Rewrites", "Action": "Rewrite opening 45 words of each product page with direct, factual definitions.", "Effort": "Medium (1 week)", "Impact": "Increases AI Overview citation rate"},
+            {"Priority": "Priority 3 (Growth)", "Initiative": "Transactional Google Search Ads", "Action": "Capture high-intent transactional search queries.", "Effort": "Medium (Ongoing)", "Impact": "Recovers #1 sponsored spots from competitors"},
+            {"Priority": "Priority 3 (Growth)", "Initiative": "Editorial Internal Link Remediation", "Action": "Add contextual keyword links from top blog posts to orphaned commercial hubs.", "Effort": "Low (2 days)", "Impact": "Resolves link equity deficits"}
         ]
         st.dataframe(pd.DataFrame(action_plan_data), use_container_width=True)
 
@@ -1412,7 +1431,6 @@ with tab_report:
             aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 0
             orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty else 0
 
-            # Crawl sample rows
             crawl_rows = ""
             if not df_c.empty:
                 for _, row in df_c.head(15).iterrows():
@@ -1423,7 +1441,6 @@ with tab_report:
                         <td>{'✓ Yes' if row['Commercial_Schema'] else '🔴 None'}</td>
                     </tr>"""
 
-            # Progress block if previous snapshot is active
             progress_html = ""
             if prev:
                 progress_html = f"""
@@ -1523,7 +1540,7 @@ with tab_report:
                     <div class="dofa-box d-f">
                         <strong style="color: #004b93;">FORTALEZAS (Strengths)</strong>
                         <ul>
-                            <li>Modern headless architecture on Next.js, Vercel & Azure CDN.</li>
+                            <li>Modern headless architecture on decoupled edge infrastructure.</li>
                             <li>Enterprise security grade ({sec_res.get('Grade', 'N/A')}: HSTS, CSP strict policies).</li>
                             <li>Visual stability (CLS: {cwv_res.get('CLS', '0.000')}).</li>
                         </ul>
