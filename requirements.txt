@@ -1,5 +1,7 @@
-beautifulsoup4
+streamlit
 requests
+beautifulsoup4
 pandas
+openpyxl
 google-generativeai
 weasyprint
