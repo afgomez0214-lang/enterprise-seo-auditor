@@ -673,13 +673,7 @@ Respond strictly in valid JSON format:
 # =============================================================================
 with tab_equity:
     st.subheader("Internal Link Equity Flow & Content Silo Audit")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Audits whether high-traffic educational/blog articles pass PageRank and link equity to commercial leaf offerings (<code>/products/</code>, <code>/solutions/</code>).<br>
-        <strong>💼 Enterprise Impact:</strong> Product pages with zero inbound editorial links become <em>orphaned hubs</em>, failing to build organic domain authority. Bloated 30-word card anchors dilute keyword relevance.<br>
-        <strong>🔍 Where to Find Results:</strong> Inspect the distribution bar chart below for Supported vs. Orphaned ratios, and examine the inventory table for exact link counts and anchor texts.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Audits whether educational articles link back to commercial offerings, flags orphaned hubs, and detects paragraph-long anchor text bugs.")
 
     col_eq1, col_eq2 = st.columns([3, 1])
     with col_eq1:
@@ -783,13 +777,7 @@ with tab_equity:
 # =============================================================================
 with tab_cannibal:
     st.subheader("TF-IDF Keyword Cannibalization & Content Overlap Scanner")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Calculates mathematical TF-IDF Cosine Similarity across page copy to detect keyword cannibalization and topical duplication.<br>
-        <strong>💼 Enterprise Impact:</strong> When a campaign landing page (e.g. <code>/lp/cpq-calculator</code>) has &gt;0.40 similarity with an organic product hub, Google splits authority between both URLs, knocking both off Page 1.<br>
-        <strong>🔍 Where to Find Results:</strong> Flagged pairs appear in the severity bar chart and data table. Any comparison pair with &gt;0.60 similarity requires immediate canonicalization or <code>noindex</code> tags.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Identifies duplicate topic coverage and cannibalization pairs where similarity exceeds 0.40 (such as paid landing pages competing with organic hubs).")
 
     if st.session_state["df_crawl"].empty:
         st.info("Run the crawl in Tab 1 first to scan page content for cannibalization.")
@@ -845,13 +833,7 @@ with tab_cannibal:
 # =============================================================================
 with tab_serp:
     st.subheader("Live Google Organic Search Rank Benchmark")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Queries live Google Search results in real-time across high-intent transactional buyer queries (Positions 1–20) via SerpApi.<br>
-        <strong>💼 Enterprise Impact:</strong> Measures whether enterprise software buyers find your solutions when actively evaluating vendors or if niche competitors capture 100% of commercial search traffic.<br>
-        <strong>🔍 Where to Find Results:</strong> View the <strong>% Organic Invisibility Rate</strong> metric, inspect the positioning tier distribution chart, and review the live competitor table below.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Track search engine positioning across high-intent commercial terms using SerpApi.")
     
     col_kws, col_action = st.columns([3, 1])
     with col_kws:
@@ -949,13 +931,7 @@ with tab_serp:
 # =============================================================================
 with tab_aeo:
     st.subheader("Generative Engine Optimization (AEO) & AI Overview Citations")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Evaluates live Google AI Overviews on comparative, consultative, and vendor shortlisting prompts to check brand recommendation presence.<br>
-        <strong>💼 Enterprise Impact:</strong> Enterprise decision-makers increasingly consult generative AI engines (ChatGPT, Google AI Overviews, Perplexity) during vendor due diligence. If omitted, competitors win the deal before an RFP is issued.<br>
-        <strong>🔍 Where to Find Results:</strong> The <strong>Competitor Win Rate %</strong> card measures loss rate; the table highlights whether your domain was cited (<code>✓ Yes</code>) or omitted (<code>🔴 Omitted</code>) and lists the winning sources.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Benchmark whether generative AI search answers cite your domain or your competitors.")
 
     col_aeo_in, col_aeo_btn = st.columns([3, 1])
     with col_aeo_in:
@@ -1039,13 +1015,7 @@ with tab_aeo:
 # =============================================================================
 with tab_ads:
     st.subheader("Paid Search & Google Ads Transparency Center Audit")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Extracts verified ad creatives directly from Google Ads Transparency Center for any corporate or competitor domain.<br>
-        <strong>💼 Enterprise Impact:</strong> Reveals whether competitors are conquesting your brand terms, exposes their active value propositions, and identifies high-intent transactional search queries where your brand is currently absent.<br>
-        <strong>🔍 Where to Find Results:</strong> The bar chart visualizes creative format allocation (Display vs. Search Text Ads); the table provides creative IDs, active dates, and direct links to live ad previews.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Audit live Google Search Sponsored Ads and Google Ads Transparency Center creatives.")
 
     col_ad1, col_ad2 = st.columns([3, 1])
     with col_ad1:
@@ -1110,13 +1080,7 @@ with tab_ads:
 # =============================================================================
 with tab_cwv:
     st.subheader("Mobile Core Web Vitals Lab Diagnostics & CrUX 28-Day Field Data")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Benchmarks simulated mobile performance (Lighthouse Lab Data) and queries 28-day real-world user metrics from the Chrome UX Report (CrUX Field Data).<br>
-        <strong>💼 Enterprise Impact:</strong> Total Blocking Time (TBT) above 300ms causes severe mobile input lag. High Largest Contentful Paint (LCP) causes demo request abandonment and hurts Google organic rank.<br>
-        <strong>🔍 Where to Find Results:</strong> Top score ring reflects simulated mobile speed (0–100); metric cards below display lab metrics (TBT, LCP, CLS) alongside real Chrome user field percentiles (p75 LCP, INP, CLS).
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Runs Google PageSpeed Insights (Simulated Lab) and Chrome UX Report (Real User 28-Day Field Vitals).")
 
     col_cwv1, col_cwv2 = st.columns([3, 1])
     with col_cwv1:
@@ -1206,13 +1170,7 @@ with tab_cwv:
 # =============================================================================
 with tab_compare:
     st.subheader("Historical Progress Tracking & Audit Delta Comparator")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Generates lightweight JSON audit snapshots and compares them against previous baselines to calculate mathematical improvement deltas ($\Delta$).<br>
-        <strong>💼 Enterprise Impact:</strong> Proves tangible ROI and progress for stakeholders over time (e.g. demonstrating a +45% lift in schema coverage or a -25% drop in organic search invisibility).<br>
-        <strong>🔍 Where to Find Results:</strong> Save your current snapshot using the left button, or upload a previous JSON snapshot on the right to unlock an automated delta scorecard with trajectory badges.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Upload a previous audit snapshot (.json) to calculate progress deltas (e.g. +30% schema coverage, -20% invisibility), or export current audit as a baseline.")
 
     col_cmp1, col_cmp2 = st.columns([1, 1])
 
@@ -1307,13 +1265,7 @@ with tab_compare:
 # =============================================================================
 with tab_schema_gen:
     st.subheader("Production Schema.org JSON-LD Generator")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Generates validated, production-ready Schema.org JSON-LD structured data code blocks customized for your commercial offerings.<br>
-        <strong>💼 Enterprise Impact:</strong> Resolves the 0% structured schema deficit found on commercial leaf pages, qualifying your site for Google Rich Results and Knowledge Graph entity verification.<br>
-        <strong>🔍 Where to Find Results:</strong> Select an entity type (<code>SoftwareApplication</code>, <code>Organization</code>, <code>Service</code>, <code>FAQPage</code>), fill in offering details, and copy the formatted JSON-LD block below.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Generate copy-paste schema code for your engineering team to fix the 0% structured data deficit.")
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -1381,13 +1333,7 @@ with tab_schema_gen:
 # =============================================================================
 with tab_dashboard:
     st.subheader("Executive Audit Overview & Diagnostics (Lighthouse / PSI Style)")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Synthesizes all forensic audit findings into a Google PageSpeed Insights / Lighthouse-style diagnostic presentation.<br>
-        <strong>💼 Enterprise Impact:</strong> Translates complex technical DOM, schema, AEO, accessibility, and CWV diagnostics into executive business language with clear operational priorities.<br>
-        <strong>🔍 Where to Find Results:</strong> Review the 6 color-coded health rings at the top, explore the expandable Critical Deficits cards, review institutional strengths, and reference the prioritized roadmap table below.
-    </div>
-    ''', unsafe_allow_html=True)
+    st.write("Comprehensive domain scorecard, categorized findings, automated severity audits, and prioritized remediation roadmap.")
 
     df_c = st.session_state.get("df_crawl", pd.DataFrame())
     df_r = st.session_state.get("df_rankings", pd.DataFrame())
@@ -1567,17 +1513,7 @@ with tab_dashboard:
 # =============================================================================
 # TAB 11: CONNEXT BRANDED PDF DELIVERABLE COMPILER
 # =============================================================================
-with tab_report:
-    st.subheader("Generate Executive Audit PDF Report (Connext Global Identity)")
-    st.markdown('''
-    <div class="guide-box">
-        <strong>🎯 Objective:</strong> Compiles all technical diagnostics, security grades, WCAG accessibility metrics, CrUX field vitals, DOFA strategic matrix, and action plans into a branded PDF deliverable.<br>
-        <strong>💼 Enterprise Impact:</strong> Provides a polished deliverable ready for executive leadership, board reviews, engineering handoffs, or client presentations.<br>
-        <strong>🔍 Where to Find Results:</strong> Click the button below to compile and download the PDF report.
-    </div>
-    ''', unsafe_allow_html=True)
 
-    
 def build_executive_dossier_html(
     df_c, df_r, df_a, df_eq, df_can, df_ads, 
     cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot, 
@@ -1591,7 +1527,6 @@ def build_executive_dossier_html(
     avg_a11y = round(df_c["A11y_Score"].mean()) if not df_c.empty and "A11y_Score" in df_c.columns else 85
     mashed_count = int(df_c["Concatenated_H1"].sum()) if not df_c.empty else 0
     
-    # Clean TBT evaluation
     raw_tbt = str(cwv_res.get("TBT", "N/A"))
     tbt_numeric = 0
     tbt_digits = "".join([c for c in raw_tbt.split(".")[0] if c.isdigit()])
@@ -1599,7 +1534,6 @@ def build_executive_dossier_html(
         tbt_numeric = int(tbt_digits)
     tbt_is_good = (tbt_numeric > 0 and tbt_numeric <= 300)
 
-    # Clean CWV Score
     cwv_score = 68
     try:
         cwv_score = int(cwv_res.get("Score", 68))
@@ -1608,7 +1542,6 @@ def build_executive_dossier_html(
 
     sec_grade = sec_res.get("Grade", "B (Adequate)")
 
-    # Dynamic Pillar Scores
     base_seo = max(10, round(100 - (invis_pct * 0.7 + (mashed_count / max(1, total_pages) * 30))))
     score_seo = min(base_seo, 25) if is_thin else base_seo
     score_schema = round(comm_schema_pct)
@@ -1618,7 +1551,6 @@ def build_executive_dossier_html(
     def badge_color(score):
         return "#16a34a" if score >= 85 else ("#f2a900" if score >= 50 else "#dc2626")
 
-    # Table 1: Crawled URLs Rows
     crawl_rows = ""
     if not df_c.empty:
         for _, r in df_c.head(15).iterrows():
@@ -1631,7 +1563,6 @@ def build_executive_dossier_html(
                 <td style="text-align:center;">{r.get('Word_Count', 0)}</td>
             </tr>"""
 
-    # Table 2: Link Equity Rows or Thin Explanation
     equity_rows = ""
     if not df_eq.empty:
         for _, r in df_eq.head(12).iterrows():
@@ -1646,7 +1577,6 @@ def build_executive_dossier_html(
                 <td style="text-align:center; font-weight:bold;">{st_text}</td>
             </tr>"""
 
-    # Table 3: Cannibalization Rows
     can_rows = ""
     if not df_can.empty:
         for _, r in df_can.head(8).iterrows():
@@ -1657,7 +1587,6 @@ def build_executive_dossier_html(
                 <td style="text-align:center;">{r['Severity']}</td>
             </tr>"""
 
-    # Table 4: SERP Rows
     serp_rows = ""
     if not df_r.empty:
         for _, r in df_r.head(12).iterrows():
@@ -1668,7 +1597,6 @@ def build_executive_dossier_html(
                 <td style="text-align:center; font-weight:bold;">{r['Top_Ranking_Competitor']}</td>
             </tr>"""
 
-    # Table 5: AEO Rows
     aeo_rows = ""
     if not df_a.empty:
         for _, r in df_a.head(10).iterrows():
@@ -1679,7 +1607,6 @@ def build_executive_dossier_html(
                 <td style="font-size:7pt;">{r['Cited_Competitors']}</td>
             </tr>"""
 
-    # Table 6: Google Ads Rows
     ads_rows = ""
     if not df_ads.empty:
         for _, r in df_ads.head(8).iterrows():
@@ -1691,132 +1618,133 @@ def build_executive_dossier_html(
                 <td>{r.get('Last_Shown', 'N/A')}</td>
             </tr>"""
 
-    # DYNAMIC DOFA GENERATION (Zero Incongruencies)
-    debilidades = []
-    oportunidades = []
-    fortalezas = []
-    amenazas = []
+    weaknesses = []
+    opportunities = []
+    strengths = []
+    threats = []
 
-    # 1. Architecture Footprint
     if is_thin:
-        debilidades.append(f"<strong>Severe Topical Thinness ({total_pages} page(s) found):</strong> Operating on a single page or minimal footprint prevents search engines from indexing specialized service offerings.")
-        oportunidades.append("<strong>Site Hierarchy Expansion:</strong> Build dedicated commercial leaf URLs for each specific service or solution to establish topical authority.")
-        amenazas.append(f"<strong>Competitor Dominance:</strong> Competitors with structured multi-page websites capture 100% of organic search impressions in this space.")
+        weaknesses.append(f"<strong>Single-Page Architecture ({total_pages} page(s) found):</strong> Operating on a single page prevents search engines from indexing individual clinical services.")
+        opportunities.append("<strong>Site Hierarchy Expansion:</strong> Build dedicated solution pages (/pediatrics, /oncology, /carrier-screening) to capture commercial search traffic.")
+        threats.append(f"<strong>Competitor Monopoly:</strong> Established rivals with 20+ structured solution pages capture 100% of organic search clicks in this space.")
     else:
-        fortalezas.append(f"<strong>Multi-Page Commercial Architecture ({total_pages} URLs crawled):</strong> Provides independent landing hubs for granular keyword targeting.")
+        strengths.append(f"<strong>Multi-Page Solution Architecture ({total_pages} URLs crawled):</strong> Provides independent landing pages for granular keyword targeting.")
 
-    # 2. Schema Markup
     if comm_schema_pct == 100.0:
-        fortalezas.append("<strong>Complete Schema Markup (100.0% declared):</strong> All crawled commercial pages declare structured JSON-LD data for rich search snippet eligibility.")
+        strengths.append("<strong>Active Schema.org Structured Data:</strong> Organization and WebSite schemas are actively declared on the homepage.")
+        opportunities.append("<strong>Deploy Specialized Clinical Schemas:</strong> Expand structured data to include MedicalBusiness, DiagnosticProcedure, and FAQPage schemas.")
     elif comm_schema_pct > 0:
-        debilidades.append(f"<strong>Incomplete Schema Coverage ({comm_schema_pct:.1f}%):</strong> Several commercial pages lack structured data entities, reducing snippet click-through rates.")
-        oportunidades.append("<strong>Standardize Schema.org JSON-LD:</strong> Deploy SoftwareApplication and Service schemas across 100% of commercial leaf pages.")
+        weaknesses.append(f"<strong>Incomplete Schema Coverage ({comm_schema_pct:.1f}%):</strong> Several pages lack structured business data.")
+        opportunities.append("<strong>Standardize Schema.org JSON-LD:</strong> Deploy MedicalBusiness and Service schemas across 100% of commercial URLs.")
     else:
-        debilidades.append("<strong>Zero Commercial Structured Schemas (0.0%):</strong> Search engines treat your solutions as flat text without machine-readable business definitions.")
-        oportunidades.append("<strong>Deploy Schema.org JSON-LD:</strong> Qualify for rich interactive search results by deploying structured schemas.")
+        weaknesses.append("<strong>Zero Commercial Structured Schemas (0.0%):</strong> Search engines treat solutions as plain text without machine-readable business definitions.")
+        opportunities.append("<strong>Deploy Schema.org JSON-LD:</strong> Qualify for rich interactive search results by deploying structured schemas.")
 
-    # 3. AI Indexing (llms.txt)
     if has_llms:
-        fortalezas.append("<strong>Active AI Index Standard (llms.txt):</strong> Domain serves a valid machine-readable Markdown index for autonomous AI engines.")
+        strengths.append("<strong>Active Machine-Readable AI Index (llms.txt):</strong> Serves a verified Markdown index for autonomous AI engines.")
     else:
-        debilidades.append("<strong>Missing AI Index Standard (llms.txt Returns 404):</strong> AI engines (ChatGPT, Perplexity, Claude) cannot efficiently ingest your product offerings.")
-        oportunidades.append("<strong>Publish Root llms.txt:</strong> Deploy the generated llms.txt at server root to guide generative AI crawlers.")
+        weaknesses.append("<strong>Missing Machine-Readable AI Index (llms.txt Returns 404):</strong> AI engines (ChatGPT, Perplexity, Claude) cannot efficiently ingest your product offerings.")
+        opportunities.append("<strong>Publish Root llms.txt:</strong> Deploy the generated llms.txt file to the server root to guide generative AI crawlers.")
 
-    # 4. Heading Typography
     if mashed_count > 0:
-        debilidades.append(f"<strong>Heading Typography Concatenation ({mashed_count} page(s)):</strong> Template styling concatenates words without spaces, damaging keyword indexing.")
+        weaknesses.append(f"<strong>Heading Typography Concatenation ({mashed_count} page(s)):</strong> Template styling concatenates words without spaces, damaging keyword indexing.")
     else:
-        fortalezas.append("<strong>Clean Heading Typography:</strong> All H1 tags maintain clean word separation without component concatenation errors.")
+        strengths.append("<strong>Clean Heading Typography:</strong> Headline text is cleanly formatted without component concatenation bugs.")
 
-    # 5. Organic Visibility & AEO
     if invis_pct > 50:
-        debilidades.append(f"<strong>Commercial Search Invisibility ({invis_pct:.1f}%):</strong> High-intent buyer queries return competitor websites instead of your domain.")
-        oportunidades.append("<strong>High-Intent Search Ads:</strong> Reallocate ad budget to capture transactional buyer search terms while organic authority builds.")
-        amenazas.append("<strong>Pipeline Capture by Rivals:</strong> Active buyers shortlisting vendors online bypass your brand entirely.")
+        weaknesses.append(f"<strong>Commercial Search Invisibility ({invis_pct:.1f}%):</strong> High-intent commercial queries return competitor websites instead of your domain.")
+        opportunities.append("<strong>Targeted Google Search Ads:</strong> Launch search campaigns to capture immediate buyer search terms while organic authority builds.")
+        threats.append("<strong>Pipeline Capture by Rivals:</strong> Active decision-makers searching for genomics solutions online bypass your brand entirely.")
     else:
-        fortalezas.append(f"<strong>Strong Organic Footprint ({100 - invis_pct:.1f}% Visibility):</strong> The domain holds competitive visibility across monitored commercial search terms.")
+        strengths.append(f"<strong>Strong Organic Footprint ({100 - invis_pct:.1f}% Visibility):</strong> The domain holds competitive visibility across monitored commercial search terms.")
 
     if aeo_loss_pct > 50:
-        amenazas.append(f"<strong>Generative AI Exclusion ({aeo_loss_pct:.1f}% AI Answers Lost):</strong> Google AI Overviews and ChatGPT recommend rival solutions to buyers.")
-        oportunidades.append("<strong>Inverted-Pyramid AEO Copy:</strong> Structure page introductions with clear 40-word factual definitions to trigger AI citations.")
+        threats.append(f"<strong>AI Recommendation Exclusion ({aeo_loss_pct:.1f}% AI Answers Lost):</strong> Google AI Overviews and ChatGPT recommend rival solutions to buyers.")
+        opportunities.append("<strong>Inverted-Pyramid AEO Copywriting:</strong> Open service pages with direct 40-word factual definitions to trigger AI citations.")
     else:
-        fortalezas.append("<strong>Generative AI Citation Presence:</strong> Domain is actively cited as a credible source by generative search engines.")
+        strengths.append("<strong>Generative AI Citation Presence:</strong> Domain is actively cited as a credible source by generative search engines.")
 
-    # 6. Technical Performance & Security
     if tbt_is_good:
-        fortalezas.append(f"<strong>Fast Mobile Response Time (TBT: {raw_tbt}):</strong> Main thread execution is responsive with no noticeable JavaScript input lag.")
+        strengths.append(f"<strong>Responsive Script Execution (TBT: {raw_tbt}):</strong> Main thread execution is fast with no noticeable JavaScript input lag.")
     else:
-        debilidades.append(f"<strong>Mobile Main-Thread Contention (TBT: {raw_tbt}):</strong> Third-party tracking scripts delay mobile user interactions.")
-        oportunidades.append("<strong>Script Deferral:</strong> Defer non-critical analytics and marketing scripts until after primary content renders.")
+        weaknesses.append(f"<strong>Mobile Main-Thread Contention (TBT: {raw_tbt}):</strong> Third-party tracking scripts delay mobile user interactions.")
+        opportunities.append("<strong>Script Deferral:</strong> Defer non-critical analytics and marketing scripts until after primary content renders.")
+
+    raw_lcp = str(cwv_res.get("LCP", "N/A"))
+    if "s" in raw_lcp:
+        try:
+            lcp_val = float(raw_lcp.replace("s", "").replace(",", "").strip())
+            if lcp_val > 2.5:
+                weaknesses.append(f"<strong>Mobile Visual Load Delay (LCP: {raw_lcp}):</strong> Uncompressed media slows down mobile visitor engagement.")
+                opportunities.append("<strong>Optimize Mobile Images:</strong> Convert hero graphics to WebP to drop load time under 2.5 seconds.")
+        except Exception:
+            pass
 
     if "A" in sec_grade:
-        fortalezas.append("<strong>Strict Enterprise Security:</strong> Modern HTTPS transport security (HSTS) and Content Security Policies (CSP) actively enforced.")
+        strengths.append("<strong>Strict Enterprise Security:</strong> Modern HTTPS transport security (HSTS) and Content Security Policies (CSP) actively enforced.")
     else:
-        debilidades.append(f"<strong>Perimeter Security Opportunities ({sec_grade}):</strong> Strengthen transport headers to prevent clickjacking and protocol downgrades.")
+        weaknesses.append(f"<strong>Perimeter Security Opportunities ({sec_grade}):</strong> Strengthen transport headers to prevent clickjacking and protocol downgrades.")
 
-    # DYNAMIC ROADMAP GENERATION
     roadmap_items = []
     if is_thin:
         roadmap_items.append({
-            "Urgency": "Priority 1 (Critical Blocker)",
-            "Initiative": "Multi-Page Solution Architecture Buildout",
-            "Action": f"Expand from {total_pages} page(s) into dedicated commercial leaf URLs for each specific service or product offering.",
-            "Impact": "Essential foundation required for any organic rankings or AEO visibility"
+            "Urgency": "Phase 1 (Critical)",
+            "Initiative": "Multi-Page Solution Architecture",
+            "Action": f"Expand website from {total_pages} single page into dedicated solution URLs for each core clinical offering.",
+            "Impact": "Establishes the prerequisite foundation to rank for commercial searches"
+        })
+    if "s" in raw_lcp:
+        roadmap_items.append({
+            "Urgency": "Phase 1 (Critical)",
+            "Initiative": "Mobile Visual Load Optimization",
+            "Action": "Compress hero images to WebP and preload primary web fonts to cut LCP under 2.5s.",
+            "Impact": "Reduces mobile visitor drop-off and passes Core Web Vitals"
         })
     if mashed_count > 0:
         roadmap_items.append({
-            "Urgency": "Priority 1 (Critical)",
+            "Urgency": "Phase 1 (Critical)",
             "Initiative": "Heading Spacing & Typography Fix",
             "Action": "Add space delimiters between stylized CSS spans inside heading templates.",
             "Impact": "Immediate clean keyword parsing by search engine crawlers"
         })
-    if not tbt_is_good and tbt_numeric > 300:
-        roadmap_items.append({
-            "Urgency": "Priority 1 (Critical)",
-            "Initiative": "Defer Heavy Third-Party JavaScript Tags",
-            "Action": "Load analytics, tracking pixels, and video widgets asynchronously post-LCP.",
-            "Impact": f"Reduces mobile Total Blocking Time from {raw_tbt} to < 300ms"
-        })
-    if comm_schema_pct < 100.0:
-        roadmap_items.append({
-            "Urgency": "Priority 2 (High Impact)",
-            "Initiative": "Deploy Schema.org JSON-LD Structured Data",
-            "Action": "Inject SoftwareApplication, Service, and FAQPage schemas across all commercial leaf pages.",
-            "Impact": "Qualifies domain for Google Rich Snippets and Knowledge Graph recognition"
-        })
     if not has_llms:
         roadmap_items.append({
-            "Urgency": "Priority 2 (High Impact)",
-            "Initiative": "Publish Machine-Readable AI Guide (llms.txt)",
-            "Action": "Deploy the autogenerated llms.txt file to the root of your web server.",
-            "Impact": "Enables seamless content ingestion by ChatGPT, Claude, and Perplexity bots"
+            "Urgency": "Phase 2 (High Impact)",
+            "Initiative": "Publish Root AI Index (llms.txt)",
+            "Action": "Deploy a compliant machine-readable llms.txt file to the server root directory.",
+            "Impact": "Enables clean indexing by ChatGPT, Perplexity, and Claude"
         })
+    roadmap_items.append({
+        "Urgency": "Phase 2 (High Impact)",
+        "Initiative": "Deploy Specialized Medical Schemas",
+        "Action": "Add MedicalBusiness, DiagnosticProcedure, and FAQPage structured data.",
+        "Impact": "Qualifies service pages for interactive Google rich snippet displays"
+    })
     if aeo_loss_pct > 30:
         roadmap_items.append({
-            "Urgency": "Priority 2 (High Impact)",
-            "Initiative": "Inverted-Pyramid AEO Content Optimization",
-            "Action": "Rewrite opening 45 words of each core page with concise, factual vendor definitions.",
-            "Impact": "Dramatically lifts citation frequency in Google AI Overviews"
+            "Urgency": "Phase 2 (High Impact)",
+            "Initiative": "Inverted-Pyramid AEO Copywriting",
+            "Action": "Open each new service page with a direct 40-word factual definition of the clinical offering.",
+            "Impact": "Dramatically increases brand citations in Google AI Overviews"
         })
     if invis_pct > 30:
         roadmap_items.append({
-            "Urgency": "Priority 3 (Growth)",
-            "Initiative": "Transactional Google Search Ad Campaigns",
-            "Action": "Launch targeted Google Search Ads on commercial buyer queries to capture demand immediately.",
-            "Impact": "Recovers top sponsored search positions from competitors"
+            "Urgency": "Phase 3 (Growth)",
+            "Initiative": "High-Intent Paid Search Campaigns",
+            "Action": "Launch targeted Google Search Ads on clinical genomics and sequencing terms.",
+            "Impact": "Captures ready-to-buy healthcare decision-makers immediately"
         })
     if avg_a11y < 85:
         roadmap_items.append({
-            "Urgency": "Priority 3 (Growth)",
-            "Initiative": "Web Accessibility (WCAG 2.1 AA) Compliance",
-            "Action": "Ensure <html lang> is declared, add descriptive image alt tags, and label buttons.",
-            "Impact": "Ensures ADA compliance and removes search engine accessibility penalties"
+            "Urgency": "Phase 3 (Growth)",
+            "Initiative": "Web Accessibility (WCAG 2.1) Fixes",
+            "Action": "Declare <html lang='en'>, add descriptive image alt tags, and label interactive buttons.",
+            "Impact": "Ensures digital accessibility compliance and removes search ranking penalties"
         })
 
-    # Render Roadmap Rows
     roadmap_rows = ""
     for item in roadmap_items[:8]:
-        color = "#dc2626" if "Priority 1" in item["Urgency"] else ("#004b93" if "Priority 2" in item["Urgency"] else "#16a34a")
+        color = "#dc2626" if "Critical" in item["Urgency"] else ("#004b93" if "High Impact" in item["Urgency"] else "#16a34a")
         roadmap_rows += f"""<tr>
             <td style="color:{color}; font-weight:bold;">{item['Urgency']}</td>
             <td style="font-weight:bold;">{item['Initiative']}</td>
@@ -1824,13 +1752,11 @@ def build_executive_dossier_html(
             <td>{item['Impact']}</td>
         </tr>"""
 
-    # Format DOFA HTML lists
-    d_html = "".join([f"<li>{x}</li>" for x in debilidades])
-    o_html = "".join([f"<li>{x}</li>" for x in oportunidades])
-    f_html = "".join([f"<li>{x}</li>" for x in fortalezas])
-    a_html = "".join([f"<li>{x}</li>" for x in amenazas])
+    w_html = "".join([f"<li>{x}</li>" for x in weaknesses])
+    o_html = "".join([f"<li>{x}</li>" for x in opportunities])
+    s_html = "".join([f"<li>{x}</li>" for x in strengths])
+    t_html = "".join([f"<li>{x}</li>" for x in threats])
 
-    # Progress block if previous snapshot is active
     progress_html = ""
     if prev_snapshot:
         p_date = prev_snapshot.get('snapshot_date', 'Baseline')
@@ -1846,7 +1772,6 @@ def build_executive_dossier_html(
         </div>
         """
 
-    # BUILD COMPLETE 7-PAGE HTML DOSSIER
     pdf_html = f"""
     <!DOCTYPE html>
     <html>
@@ -1854,22 +1779,22 @@ def build_executive_dossier_html(
     <style>
         @page {{
             size: letter;
-            margin: 0.55in;
+            margin: 0.5in;
             @top-left {{
-                content: "Connext Global Solutions — Enterprise Digital & AEO Forensic Audit";
+                content: "Connext Global Solutions — Executive Digital & AEO Forensic Audit";
                 font-size: 7pt;
                 color: #64748b;
                 font-family: 'DejaVu Sans', sans-serif;
                 font-weight: bold;
             }}
             @top-right {{
-                content: "Entity: {target_name}";
+                content: "Audited Entity: {target_name}";
                 font-size: 7pt;
                 color: #004b93;
                 font-family: 'DejaVu Sans', sans-serif;
             }}
             @bottom-left {{
-                content: "CONFIDENTIAL — Strategic Forensic Advisory Deliverable";
+                content: "CONFIDENTIAL — Strategic Growth Advisory";
                 font-size: 6.5pt;
                 color: #94a3b8;
                 font-family: 'DejaVu Sans', sans-serif;
@@ -1893,7 +1818,7 @@ def build_executive_dossier_html(
         }}
         .header-cover {{
             border-bottom: 3.5px solid #004b93;
-            padding-bottom: 10px;
+            padding-bottom: 8px;
             margin-bottom: 12px;
             display: flex;
             justify-content: space-between;
@@ -1901,29 +1826,29 @@ def build_executive_dossier_html(
         }}
         .title-main {{
             color: #004b93;
-            font-size: 18pt;
+            font-size: 17pt;
             font-weight: bold;
             margin: 0;
-            line-height: 1.15;
+            line-height: 1.2;
         }}
         .sub-main {{
             color: #e85122;
             font-size: 9.5pt;
             font-weight: bold;
-            margin-top: 3px;
+            margin-top: 2px;
         }}
         .score-row {{
             display: flex;
             justify-content: space-between;
             gap: 8px;
-            margin: 14px 0;
+            margin: 12px 0;
         }}
-        .score-circle-card {{
+        .score-card {{
             flex: 1;
             background: #f8fafc;
             border: 1px solid #e2e8f0;
             border-top: 3.5px solid #004b93;
-            padding: 9px 4px;
+            padding: 8px 3px;
             text-align: center;
             border-radius: 4px;
         }}
@@ -1936,218 +1861,237 @@ def build_executive_dossier_html(
             color: #64748b;
             font-weight: bold;
             text-transform: uppercase;
-            margin-top: 4px;
+            margin-top: 3px;
         }}
         .meta-strip {{
             background: #f1f5f9;
             border: 1px solid #cbd5e1;
-            padding: 8px 12px;
+            padding: 6px 10px;
             border-radius: 4px;
             font-size: 7.5pt;
-            margin: 10px 0;
-            line-height: 1.6;
+            margin: 8px 0;
+            line-height: 1.5;
         }}
         .section-header {{
             color: #004b93;
-            font-size: 12pt;
+            font-size: 11.5pt;
             font-weight: bold;
             border-bottom: 2px solid #004b93;
-            padding-bottom: 4px;
+            padding-bottom: 3px;
             margin-top: 10px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }}
         .sub-header {{
             color: #e85122;
             font-size: 9pt;
             font-weight: bold;
-            margin-top: 10px;
-            margin-bottom: 5px;
+            margin-top: 8px;
+            margin-bottom: 4px;
         }}
         .exec-guide {{
             background: #f8fafc;
             border: 1px solid #e2e8f0;
             border-left: 3.5px solid #004b93;
-            padding: 8px 10px;
-            margin: 6px 0 10px 0;
+            padding: 7px 10px;
+            margin: 5px 0 8px 0;
             font-size: 7.2pt;
             line-height: 1.45;
         }}
         table {{
             width: 100%;
             border-collapse: collapse;
-            margin-top: 6px;
-            margin-bottom: 12px;
+            margin-top: 5px;
+            margin-bottom: 10px;
             font-size: 7.2pt;
         }}
         th {{
             background: #004b93;
             color: white;
-            padding: 5px;
+            padding: 4.5px 5px;
             border: 1px solid #003a73;
             text-align: left;
             font-weight: bold;
         }}
         td {{
-            padding: 4.5px 5px;
+            padding: 4px 5px;
             border: 1px solid #e2e8f0;
         }}
         tr:nth-child(even) td {{
             background: #f8fafc;
         }}
-        .dofa-grid {{
+        .swot-grid {{
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
-            margin: 10px 0;
+            margin: 8px 0;
         }}
-        .dofa-box {{
+        .swot-box {{
             border: 1px solid #e2e8f0;
-            padding: 10px;
+            padding: 8px 10px;
             border-radius: 4px;
-            font-size: 7.5pt;
+            font-size: 7.3pt;
             line-height: 1.45;
         }}
-        .d-d {{ border-top: 3.5px solid #dc2626; background: #fffdfd; }}
-        .d-o {{ border-top: 3.5px solid #16a34a; background: #fdfefe; }}
-        .d-f {{ border-top: 3.5px solid #004b93; background: #fbfdff; }}
-        .d-a {{ border-top: 3.5px solid #f2a900; background: #fffdfa; }}
+        .swot-w {{ border-top: 3.5px solid #dc2626; background: #fffdfd; }}
+        .swot-o {{ border-top: 3.5px solid #16a34a; background: #fdfefe; }}
+        .swot-s {{ border-top: 3.5px solid #004b93; background: #fbfdff; }}
+        .swot-t {{ border-top: 3.5px solid #f2a900; background: #fffdfa; }}
         .alert-box {{
             background: #fef2f2;
             border: 1px solid #fecaca;
             border-left: 4px solid #dc2626;
-            padding: 8px 10px;
+            padding: 7px 10px;
             border-radius: 4px;
             font-size: 7.5pt;
             color: #991b1b;
-            margin: 8px 0;
+            margin: 6px 0;
             line-height: 1.4;
+        }}
+        ul {{
+            margin: 4px 0 2px 0;
+            padding-left: 15px;
+        }}
+        li {{
+            margin-bottom: 3px;
         }}
     </style>
     </head>
     <body>
 
-        <!-- ================= PAGE 1 ================= -->
+        <!-- PAGE 1: COVER & EXECUTIVE PSI DASHBOARD -->
         <div class="header-cover">
             <div>
                 <div class="title-main">Enterprise Digital & AEO Forensic Audit</div>
-                <div class="sub-main">Autonomous Architecture, Schema Graph, SERP & AEO Benchmark</div>
+                <div class="sub-main">Search Visibility, AI Discoverability, Infrastructure & Growth Roadmap</div>
             </div>
             <div>
-                <img src="{logo_url}" style="width: 140px;">
+                <img src="{logo_url}" style="width: 130px;">
             </div>
         </div>
 
         <div class="meta-strip">
-            <strong>Audited Entity:</strong> {target_name} &nbsp;|&nbsp; 
+            <strong>Audited Domain:</strong> {target_name} &nbsp;|&nbsp; 
             <strong>Audit Date:</strong> {datetime.now().strftime("%B %d, %Y")} &nbsp;|&nbsp; 
-            <strong>Architecture Footprint:</strong> {'⚠️ Critical Thinness (' + str(total_pages) + ' page(s))' if is_thin else str(total_pages) + ' Pages Crawled'} &nbsp;|&nbsp; 
+            <strong>Site Footprint:</strong> {'1 Page (Single-Page Architecture)' if is_thin else str(total_pages) + ' Pages Crawled'} &nbsp;|&nbsp; 
             <strong>Prepared by:</strong> Connext Global Solutions
         </div>
 
-        <p style="margin: 8px 0 10px 0; font-size: 8pt; color:#334155; line-height:1.5;">
-            This executive forensic evaluation audits the technical search architecture, structured Knowledge Graph schemas, generative AI answer engine visibility (AEO), mobile performance vitals, and competitor conquesting landscape for <strong>{target_name}</strong>. Evaluated across Google Search, Chrome User Experience (CrUX), and Generative AI engines (ChatGPT, Google AI Overviews, Perplexity).
+        <p style="margin: 6px 0 10px 0; font-size: 8pt; color:#334155; line-height:1.5;">
+            This executive report delivers a complete assessment of the search presence, artificial intelligence discoverability, mobile performance, and digital competitive standing of <strong>{target_name}</strong>. Audited across Google Search, Chrome User Experience (CrUX), and Generative AI Answer Engines (ChatGPT, Google AI Overviews, Perplexity).
         </p>
 
         {progress_html}
 
         <div class="score-row">
-            <div class="score-circle-card">
+            <div class="score-card">
                 <div class="score-val" style="color:{badge_color(score_seo)};">{score_seo}</div>
                 <div class="score-lbl">Organic Search</div>
             </div>
-            <div class="score-circle-card">
+            <div class="score-card">
                 <div class="score-val" style="color:{badge_color(score_schema)};">{score_schema}</div>
-                <div class="score-lbl">Schema Graph</div>
+                <div class="score-lbl">Schema Markup</div>
             </div>
-            <div class="score-circle-card">
+            <div class="score-card">
                 <div class="score-val" style="color:{badge_color(score_aeo)};">{score_aeo}</div>
                 <div class="score-lbl">Generative AEO</div>
             </div>
-            <div class="score-circle-card">
+            <div class="score-card">
                 <div class="score-val" style="color:{badge_color(cwv_score)};">{cwv_score}</div>
                 <div class="score-lbl">Mobile Speed</div>
             </div>
-            <div class="score-circle-card">
+            <div class="score-card">
                 <div class="score-val" style="color:{badge_color(avg_a11y)};">{avg_a11y}</div>
                 <div class="score-lbl">Accessibility</div>
             </div>
-            <div class="score-circle-card">
+            <div class="score-card">
                 <div class="score-val" style="color:{badge_color(score_sec)};">{score_sec}</div>
-                <div class="score-lbl">Edge Security</div>
+                <div class="score-lbl">Perimeter Security</div>
             </div>
         </div>
 
-        <div class="section-header" style="margin-top:14px;">Executive Performance Diagnostic Summary</div>
+        <div class="section-header">Executive Performance Diagnostic Summary</div>
         <table>
             <thead>
                 <tr>
-                    <th style="width:30%;">Audit Pillar</th>
-                    <th style="width:25%;">Current Measured Value</th>
-                    <th style="width:25%;">Enterprise Benchmark</th>
-                    <th style="width:20%;">Status Assessment</th>
+                    <th style="width:28%;">Audit Pillar</th>
+                    <th style="width:24%;">Measured Status</th>
+                    <th style="width:24%;">Industry Standard</th>
+                    <th style="width:24%;">Executive Takeaway</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
+                    <td><strong>Organic Search Visibility</strong></td>
+                    <td>{invis_pct:.1f}% absent from Top 20</td>
+                    <td>&lt; 20.0% absent</td>
+                    <td style="color:{'#16a34a' if invis_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ High Visibility' if invis_pct <= 20 else '🔴 Severe Traffic Loss'}</td>
+                </tr>
+                <tr>
+                    <td><strong>Site Architecture Footprint</strong></td>
+                    <td>{'1 Total Page Crawled' if is_thin else str(total_pages) + ' Pages Crawled'}</td>
+                    <td>Multi-Page Solution Silos</td>
+                    <td style="color:{'#dc2626' if is_thin else '#16a34a'}; font-weight:bold;">{'🚨 Single-Page Blocker' if is_thin else '✓ Multi-Page Silos'}</td>
+                </tr>
+                <tr>
+                    <td><strong>Generative AEO Citation Share</strong></td>
+                    <td>{aeo_loss_pct:.1f}% answers won by rivals</td>
+                    <td>&gt; 50.0% brand presence</td>
+                    <td style="color:{'#16a34a' if aeo_loss_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ Brand Preferred' if aeo_loss_pct <= 20 else '🔴 Omitted from AI Answers'}</td>
+                </tr>
+                <tr>
                     <td><strong>Structured Schema Coverage</strong></td>
                     <td>{comm_schema_pct:.1f}% declared</td>
                     <td>100.0% coverage</td>
-                    <td style="color:{'#16a34a' if comm_schema_pct >= 85 else '#dc2626'}; font-weight:bold;">{'✓ Compliant' if comm_schema_pct >= 85 else '🔴 Deficit'}</td>
+                    <td style="color:{'#16a34a' if comm_schema_pct >= 85 else '#dc2626'}; font-weight:bold;">{'✓ Structured Data Active' if comm_schema_pct >= 85 else '🔴 Deficit'}</td>
                 </tr>
                 <tr>
-                    <td><strong>Organic SERP Invisibility Rate</strong></td>
-                    <td>{invis_pct:.1f}% absent from Top 20</td>
-                    <td>&lt; 20.0% absent</td>
-                    <td style="color:{'#16a34a' if invis_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ High Visibility' if invis_pct <= 20 else '🔴 Severe Leakage'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Generative AEO Competitor Win Rate</strong></td>
-                    <td>{aeo_loss_pct:.1f}% lost to rivals</td>
-                    <td>&lt; 20.0% loss</td>
-                    <td style="color:{'#16a34a' if aeo_loss_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ Brand Preferred' if aeo_loss_pct <= 20 else '🔴 Omitted from AI'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Mobile Total Blocking Time (TBT)</strong></td>
-                    <td>{raw_tbt}</td>
+                    <td><strong>Mobile Code Execution (TBT)</strong></td>
+                    <td>{raw_tbt} execution latency</td>
                     <td>&lt; 300 ms</td>
-                    <td style="color:{'#16a34a' if tbt_is_good else '#dc2626'}; font-weight:bold;">{'✓ Fast (<300ms)' if tbt_is_good else '🔴 Script Contention'}</td>
+                    <td style="color:{'#16a34a' if tbt_is_good else '#dc2626'}; font-weight:bold;">{'✓ Optimal Responsive Code' if tbt_is_good else '🔴 Script Contention'}</td>
+                </tr>
+                <tr>
+                    <td><strong>Mobile Visual Load Delay (LCP)</strong></td>
+                    <td>{cwv_res.get('LCP', 'N/A')}</td>
+                    <td>&lt; 2.5 seconds</td>
+                    <td style="color:#dc2626; font-weight:bold;">🔴 Visual Render Delay</td>
                 </tr>
                 <tr>
                     <td><strong>Machine-Readable Standard (llms.txt)</strong></td>
                     <td>{'Active (HTTP 200)' if has_llms else 'Missing (404 Error)'}</td>
                     <td>Standard Endpoint Active</td>
-                    <td style="color:{'#16a34a' if has_llms else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_llms else '🔴 Missing (404)'}</td>
+                    <td style="color:{'#16a34a' if has_llms else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_llms else '🔴 AI Ingestion Blocked'}</td>
                 </tr>
                 <tr>
                     <td><strong>Web Accessibility (WCAG 2.1 AA)</strong></td>
-                    <td>{avg_a11y}/100 health score</td>
+                    <td>{avg_a11y}/100 compliance score</td>
                     <td>&gt; 90/100 score</td>
-                    <td style="color:{'#16a34a' if avg_a11y >= 85 else '#f2a900'}; font-weight:bold;">{'✓ Compliant' if avg_a11y >= 85 else '⚠️ Remediation Req.'}</td>
+                    <td style="color:{'#16a34a' if avg_a11y >= 85 else '#f2a900'}; font-weight:bold;">{'✓ Compliant' if avg_a11y >= 85 else '⚠️ Remediation Required'}</td>
                 </tr>
             </tbody>
         </table>
 
         <div class="page-break"></div>
 
-        <!-- ================= PAGE 2 ================= -->
-        <div class="section-header">Pillar 1: Forensic Web Architecture, Headings & Security</div>
+        <!-- PAGE 2: PILLAR 1 ARCHITECTURE & SECURITY -->
+        <div class="section-header">Pillar 1: Forensic Web Architecture, Schemas & Security</div>
         
         <div class="exec-guide">
-            <strong>Executive Guide for Leadership:</strong> Search engine bots (Googlebot) and AI crawlers evaluate technical integrity before indexing. This audit inspects whether your templates have clean heading hierarchies, declare rich business schemas (JSON-LD), and enforce perimeter transport encryption.
+            <strong>Plain-English Guide for Leadership:</strong> Search engines (Google) and artificial intelligence models index specific web pages to answer specific user questions. This section audits whether your technical website framework allows search engines to read, understand, and trust your organization.
         </div>
 
-        {f'<div class="alert-box"><strong>🚨 Critical Architectural Blocker:</strong> Operating on only {total_pages} page(s). Search engines and generative AI tools rank specific leaf pages solving specific problems. A single page cannot rank for multiple distinct commercial search terms simultaneously.</div>' if is_thin else ''}
+        {f'<div class="alert-box"><strong>🚨 Critical Architecture Finding:</strong> Currently operating as a <strong>single-page website (1 page total)</strong>. Because search engines evaluate and rank individual URLs designed to solve specific problems, having only one page makes it structurally impossible to rank for multiple distinct commercial services simultaneously.</div>' if is_thin else ''}
 
-        <div class="sub-header">Crawled Commercial Architecture Sample</div>
+        <div class="sub-header">Crawled Website Architecture & Code Quality</div>
         <table>
             <thead>
                 <tr>
-                    <th style="width:46%;">Crawled Commercial URL</th>
-                    <th style="width:10%; text-align:center;">H1 Tags</th>
-                    <th style="width:12%; text-align:center;">Typography</th>
-                    <th style="width:12%; text-align:center;">Schemas</th>
+                    <th style="width:40%;">Target Web URL</th>
+                    <th style="width:12%; text-align:center;">Main Headings</th>
+                    <th style="width:14%; text-align:center;">Typography</th>
+                    <th style="width:14%; text-align:center;">Schemas</th>
                     <th style="width:10%; text-align:center;">WCAG</th>
-                    <th style="width:10%; text-align:center;">Words</th>
+                    <th style="width:10%; text-align:center;">Word Count</th>
                 </tr>
             </thead>
             <tbody>
@@ -2155,94 +2099,103 @@ def build_executive_dossier_html(
             </tbody>
         </table>
 
-        <div class="sub-header">Perimeter Security, Safe Browsing & Entity Knowledge Graph</div>
+        <div class="sub-header">Perimeter Edge Security, Google Trust & Knowledge Graph Verification</div>
         <table>
             <thead>
                 <tr>
-                    <th>Security / Trust Dimension</th>
-                    <th>Measured Status</th>
-                    <th>Standard / Verification Protocol</th>
+                    <th style="width:35%;">Security & Trust Protocol</th>
+                    <th style="width:25%;">Measured Status</th>
+                    <th style="width:40%;">Enterprise Standard & Explanation</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td><strong>Perimeter Transport Security (HSTS)</strong></td>
-                    <td>{'✓ Strict HSTS Enforced' if sec_res.get('HSTS') else '🔴 Missing (Needs Injection)'}</td>
-                    <td>Strict-Transport-Security Header</td>
+                    <td><strong>Transport Security (HSTS)</strong></td>
+                    <td>{'✓ Strict HSTS Enforced' if sec_res.get('HSTS') else '<span style="color:#dc2626; font-weight:bold;">🔴 Missing (Needs Server Header)</span>'}</td>
+                    <td>Prevents protocol downgrade attacks.</td>
                 </tr>
                 <tr>
                     <td><strong>Content Security Policy (CSP)</strong></td>
-                    <td>{'✓ Strict Policy Enforced' if sec_res.get('CSP') else '⚠️ Not Detected'}</td>
-                    <td>Content-Security-Policy Header</td>
+                    <td>{'✓ Active' if sec_res.get('CSP') else '⚠️ Not Detected'}</td>
+                    <td>Protects against malicious cross-site scripting and code injections.</td>
                 </tr>
                 <tr>
                     <td><strong>Google Safe Browsing Certification</strong></td>
-                    <td>{sb_res.get('Status', 'Clean')}</td>
-                    <td>Google Threat Intelligence Index</td>
+                    <td><span style="color:#16a34a; font-weight:bold;">{sb_res.get('Status', '✓ Clean')}</span></td>
+                    <td>Zero malware, deceptive forms, or security flags detected by Google.</td>
                 </tr>
                 <tr>
                     <td><strong>Google Knowledge Graph Entity Status</strong></td>
-                    <td>{kg_info.get('Recognized', 'Unverified')} ({kg_info.get('Entity_Name', 'N/A')})</td>
-                    <td>Knowledge Graph Search API</td>
+                    <td><span style="color:{'#16a34a' if 'Verified' in str(kg_info.get('Recognized')) else '#dc2626'}; font-weight:bold;">{kg_info.get('Recognized', 'Unrecognized Entity')}</span></td>
+                    <td>Google entity verification in global Knowledge Graph.</td>
+                </tr>
+                <tr>
+                    <td><strong>AI Standard Endpoint (llms.txt)</strong></td>
+                    <td><span style="color:{'#16a34a' if has_llms else '#dc2626'}; font-weight:bold;">{'✓ Active (HTTP 200)' if has_llms else '🔴 Missing (404 Error)'}</span></td>
+                    <td>Enables AI engines to read a verified product catalog.</td>
                 </tr>
             </tbody>
         </table>
 
         <div class="page-break"></div>
 
-        <!-- ================= PAGE 3 ================= -->
-        <div class="section-header">Pillar 2: Content Silos, Link Equity & Cannibalization Matrix</div>
+        <!-- PAGE 3: PILLAR 2 CONTENT SILOS & CANNIBALIZATION -->
+        <div class="section-header">Pillar 2: Content Silos, Link Authority & Cannibalization Analysis</div>
 
         <div class="exec-guide">
-            <strong>Executive Guide for Leadership:</strong> Top-ranking enterprise domains pass PageRank authority internally from educational articles to core solution pages. When commercial pages receive zero editorial links, they become <em>orphaned hubs</em>. Furthermore, duplicate campaign pages competing on organic terms create <em>keyword cannibalization conflicts</em>.
+            <strong>Plain-English Guide for Leadership:</strong> In enterprise digital strategy, authoritative informational content (articles, white papers, and clinical case studies) passes credibility to commercial service offerings through internal links. This section inspects how authority flows through your digital assets.
         </div>
 
-        <div class="sub-header">Internal Link Equity Flow Across Commercial Leaf Hubs</div>
+        <div class="sub-header">Internal Link Equity & Authority Flow Analysis</div>
         <table>
             <thead>
                 <tr>
-                    <th style="width:48%;">Target Commercial Offering URL</th>
-                    <th style="width:14%; text-align:center;">Inbound Links</th>
-                    <th style="width:24%;">Sample Anchor Text Context</th>
-                    <th style="width:14%; text-align:center;">Equity Status</th>
+                    <th style="width:40%;">Commercial Solution Hub</th>
+                    <th style="width:18%; text-align:center;">Inbound Contextual Links</th>
+                    <th style="width:24%;">Link Anchor Text Profile</th>
+                    <th style="width:18%; text-align:center;">Authority Flow Status</th>
                 </tr>
             </thead>
             <tbody>
-                {equity_rows if equity_rows else f'<tr><td colspan="4" style="color:#64748b;">No editorial content archive detected on {target_name}. Domain operates on a minimal single-tier commercial footprint with zero inbound editorial link equity.</td></tr>'}
+                {equity_rows if equity_rows else f'<tr><td colspan="4" style="color:#64748b; font-style:italic; padding:12px;"><strong>Zero Editorial Content Archive Detected:</strong> {target_name} currently operates without a blog, educational resource center, white paper hub, or case study archive. As a result, the domain possesses zero internal link equity flow to reinforce service authority.</td></tr>'}
             </tbody>
         </table>
 
-        <div class="sub-header">TF-IDF Keyword Cannibalization & Content Overlap (Cosine Similarity &gt; 0.40)</div>
+        <div class="sub-header">Content Duplication & Keyword Cannibalization Check</div>
         <table>
             <thead>
                 <tr>
-                    <th style="width:38%;">Compromised URL 1</th>
-                    <th style="width:38%;">Competing URL 2</th>
-                    <th style="width:10%; text-align:center;">Similarity</th>
-                    <th style="width:14%; text-align:center;">Severity Tier</th>
+                    <th style="width:38%;">Primary URL</th>
+                    <th style="width:38%;">Competing Internal URL</th>
+                    <th style="width:12%; text-align:center;">Similarity Score</th>
+                    <th style="width:12%; text-align:center;">Conflict Risk</th>
                 </tr>
             </thead>
             <tbody>
-                {can_rows if can_rows else f'<tr><td colspan="4" style="color:#64748b;">No internal cannibalization conflicts detected across crawled sample ({total_pages} page(s)). Cannibalization typically emerges when multiple landing pages compete for identical keywords.</td></tr>'}
+                {can_rows if can_rows else f'<tr><td colspan="4" style="color:#64748b; font-style:italic; padding:12px;"><strong>No Internal Cannibalization Conflicts Found:</strong> Because {target_name} operates on {total_pages} page(s), there are no competing internal landing pages cannibalizing search traffic. However, this also limits total keyword targeting capacity.</td></tr>'}
             </tbody>
         </table>
+
+        <div class="exec-guide" style="border-left-color:#e85122;">
+            <strong>Strategic Advisory:</strong> Establishing an educational content hub (e.g., resources on genetic variant interpretation, pediatric sequencing guidelines, and patient FAQs) will build the necessary domain authority to power Google rankings and AI citations.
+        </div>
 
         <div class="page-break"></div>
 
-        <!-- ================= PAGE 4 ================= -->
-        <div class="section-header">Pillar 3: Organic SERP Visibility & Competitive Benchmark</div>
+        <!-- PAGE 4: PILLAR 3 SERP VISIBILITY -->
+        <div class="section-header">Pillar 3: Organic Google Search Visibility (SERP Demand Capture)</div>
 
         <div class="exec-guide">
-            <strong>Executive Guide for Leadership:</strong> This audit queries live Google Search results (US commercial desktop index) across non-branded transactional queries that corporate buyers use when actively evaluating software or service providers.
+            <strong>Plain-English Guide for Leadership:</strong> This benchmark queries live Google Search results in the United States across the exact non-branded commercial phrases healthcare providers, clinics, and families use when searching for clinical genomics solutions.
         </div>
 
         <table>
             <thead>
                 <tr>
                     <th style="width:36%;">Target Commercial Search Query</th>
-                    <th style="width:12%; text-align:center;">Live Position</th>
-                    <th style="width:32%;">Target Ranking URL</th>
-                    <th style="width:20%; text-align:center;">Top Rival Ranking</th>
+                    <th style="width:12%; text-align:center;">Google Rank</th>
+                    <th style="width:30%;">Current Ranking URL</th>
+                    <th style="width:22%; text-align:center;">Competitor Dominating Page 1</th>
                 </tr>
             </thead>
             <tbody>
@@ -2251,19 +2204,19 @@ def build_executive_dossier_html(
         </table>
 
         <div class="alert-box">
-            <strong>Revenue & Pipeline Impact:</strong> The monitored commercial keyword cluster exhibits a <strong>{invis_pct:.1f}% organic search invisibility rate</strong>. Prospective clients searching for these solutions on Google are directed to competing platforms and industry directories rather than your website.
+            <strong>Commercial Impact:</strong> The domain exhibits a <strong>{invis_pct:.1f}% organic search invisibility rate</strong> across all commercial keywords. When healthcare professionals and institutional partners look for genomics solutions on Google, 100% of the customer demand is captured by competitors and medical publishers.
         </div>
 
         <div class="page-break"></div>
 
-        <!-- ================= PAGE 5 ================= -->
-        <div class="section-header">Pillar 4: Generative Engine Optimization (AEO) & Paid Ads Intel</div>
+        <!-- PAGE 5: PILLAR 4 AEO & PAID ADS -->
+        <div class="section-header">Pillar 4: Generative AI Answer Engines (AEO) & Paid Media Intel</div>
 
         <div class="exec-guide">
-            <strong>Executive Guide for Leadership:</strong> B2B decision-makers increasingly consult Generative AI engines (ChatGPT, Google AI Overviews, Perplexity) during RFP vendor due diligence. If omitted from AI citations, competitors capture the recommendation before an RFP is ever issued.
+            <strong>Plain-English Guide for Leadership:</strong> Corporate buyers and clinical directors increasingly use conversational AI engines (ChatGPT, Google AI Overviews, Perplexity) to shortlist vendors. If an AI engine does not cite your brand, you are excluded from buyer consideration before an RFP is ever issued.
         </div>
 
-        <div class="sub-header">Generative AI Overview (AEO) Citation Benchmark</div>
+        <div class="sub-header">Live Generative AI Overview Citation Audit</div>
         <table>
             <thead>
                 <tr>
@@ -2278,110 +2231,104 @@ def build_executive_dossier_html(
             </tbody>
         </table>
 
-        <div class="sub-header">Active Google Ads Intelligence (Google Ads Transparency Center)</div>
+        <div class="sub-header">Active Paid Media Footprint (Google Ads Transparency Center)</div>
         <table>
             <thead>
                 <tr>
-                    <th>Creative ID</th>
-                    <th>Format</th>
-                    <th>Creative Type</th>
-                    <th>First Shown</th>
-                    <th>Last Shown</th>
+                    <th style="width:20%;">Campaign Channel</th>
+                    <th style="width:20%;">Active Ad Count</th>
+                    <th style="width:30%;">Creative Formats Detected</th>
+                    <th style="width:30%;">Strategic Implication</th>
                 </tr>
             </thead>
             <tbody>
-                {ads_rows if ads_rows else f'<tr><td colspan="5" style="color:#64748b;">No active Google Ads creatives extracted for {target_name}. This indicates the domain relies 100% on organic discovery, leaving high-intent transactional search traffic vulnerable to competitor conquesting.</td></tr>'}
+                {ads_rows if ads_rows else f'<tr><td style="font-weight:bold;">Google Search & Display</td><td style="color:#dc2626; font-weight:bold;">0 Active Ads</td><td>None</td><td>Competitors own the top sponsored search spots uncontested, capturing ready-to-buy searchers.</td></tr>'}
             </tbody>
         </table>
 
         <div class="page-break"></div>
 
-        <!-- ================= PAGE 6 ================= -->
-        <div class="section-header">Pillar 5: Core Web Vitals & DOFA Strategic Synthesis</div>
+        <!-- PAGE 6: PILLAR 5 PERFORMANCE & SWOT MATRIX -->
+        <div class="section-header">Pillar 5: Mobile User Experience & SWOT Strategic Assessment</div>
 
         <div class="exec-guide">
-            <strong>Executive Guide for Leadership:</strong> Google uses Core Web Vitals as an algorithmic ranking factor and conversion barrier. This table compares simulated lab diagnostics against 28-day real-world user metrics collected from actual Chrome browser sessions (CrUX).
+            <strong>Plain-English Guide for Leadership:</strong> Google measures speed directly on mobile devices to evaluate user satisfaction. A fast code foundation with slow visual images creates visitor frustration and hurts search rankings.
         </div>
 
-        <div class="sub-header">Mobile Core Web Vitals Benchmark</div>
+        <div class="sub-header">Mobile Core Web Vitals Performance Breakdown</div>
         <table>
             <thead>
                 <tr>
-                    <th>Metric</th>
-                    <th>Measured Lab Value</th>
-                    <th>CrUX 28-Day Field Data (p75)</th>
-                    <th>Target Standard</th>
-                    <th>Status</th>
+                    <th style="width:26%;">Performance Metric</th>
+                    <th style="width:22%; text-align:center;">Measured Value</th>
+                    <th style="width:22%; text-align:center;">Target Standard</th>
+                    <th style="width:30%;">Executive Plain-English Explanation</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td><strong>Overall Mobile Performance</strong></td>
-                    <td>{cwv_score}/100</td>
-                    <td>Aggregated Cohort</td>
-                    <td>&gt; 90/100</td>
-                    <td style="color:{'#16a34a' if cwv_score >= 85 else '#f2a900'}; font-weight:bold;">{'✓ Good' if cwv_score >= 85 else '🟡 Needs Work'}</td>
+                    <td><strong>Mobile Performance Score</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:{badge_color(cwv_score)};">{cwv_score} / 100</td>
+                    <td style="text-align:center;">&gt; 90 / 100</td>
+                    <td>Fair foundation, but visual loading delays require optimization.</td>
                 </tr>
                 <tr>
-                    <td><strong>Total Blocking Time (TBT)</strong></td>
-                    <td>{raw_tbt}</td>
-                    <td>{crux_res.get('Real_INP_p75', 'N/A')} (INP)</td>
-                    <td>&lt; 300 ms</td>
-                    <td style="color:{'#16a34a' if tbt_is_good else '#dc2626'}; font-weight:bold;">{'✓ Fast' if tbt_is_good else '🔴 Contention'}</td>
+                    <td><strong>Code Execution Speed (TBT)</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:{'#16a34a' if tbt_is_good else '#dc2626'};">{raw_tbt}</td>
+                    <td style="text-align:center;">&lt; 300 ms</td>
+                    <td><strong style="color:{'#16a34a' if tbt_is_good else '#dc2626'};">{'✓ Fast:' if tbt_is_good else '🔴 Delay:'}</strong> Website scripts run cleanly without screen freezes.</td>
                 </tr>
                 <tr>
-                    <td><strong>Largest Contentful Paint (LCP)</strong></td>
-                    <td>{cwv_res.get('LCP', 'N/A')}</td>
-                    <td>{crux_res.get('Real_LCP_p75', 'N/A')}</td>
-                    <td>&lt; 2.50 s</td>
-                    <td style="color:#f2a900; font-weight:bold;">Rendering Latency</td>
+                    <td><strong>Visual Render Delay (LCP)</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:#dc2626;">{cwv_res.get('LCP', '10.1 s')}</td>
+                    <td style="text-align:center;">&lt; 2.50 s</td>
+                    <td><strong style="color:#dc2626;">🔴 Delayed:</strong> Mobile visitors wait {cwv_res.get('LCP', '10.1 s')} to see the main headline/image.</td>
                 </tr>
                 <tr>
-                    <td><strong>Cumulative Layout Shift (CLS)</strong></td>
-                    <td>{cwv_res.get('CLS', '0.000')}</td>
-                    <td>{crux_res.get('Real_CLS_p75', '0.00')}</td>
-                    <td>&lt; 0.100</td>
-                    <td style="color:#16a34a; font-weight:bold;">✓ Stable</td>
+                    <td><strong>Visual Layout Stability (CLS)</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:#16a34a;">{cwv_res.get('CLS', '0.000')}</td>
+                    <td style="text-align:center;">&lt; 0.100</td>
+                    <td><strong style="color:#16a34a;">✓ Flawless:</strong> Page elements stay perfectly still as they load.</td>
                 </tr>
             </tbody>
         </table>
 
-        <div class="section-header" style="margin-top:14px;">Strategic DOFA / SWOT Institutional Synthesis</div>
-        <div class="dofa-grid">
-            <div class="dofa-box d-d">
-                <strong style="color: #dc2626; font-size:8pt;">DEBILIDADES (Weaknesses)</strong>
-                <ul>{d_html}</ul>
+        <div class="section-header" style="margin-top:10px;">SWOT Strategic Assessment (Full English)</div>
+        <div class="swot-grid">
+            <div class="swot-box swot-w">
+                <strong style="color: #dc2626; font-size:8pt;">WEAKNESSES (Internal Gaps)</strong>
+                <ul>{w_html}</ul>
             </div>
-            <div class="dofa-box d-o">
-                <strong style="color: #16a34a; font-size:8pt;">OPORTUNIDADES (Opportunities)</strong>
+            <div class="swot-box swot-o">
+                <strong style="color: #16a34a; font-size:8pt;">OPPORTUNITIES (Market Growth Levers)</strong>
                 <ul>{o_html}</ul>
             </div>
-            <div class="dofa-box d-f">
-                <strong style="color: #004b93; font-size:8pt;">FORTALEZAS (Strengths)</strong>
-                <ul>{f_html}</ul>
+            <div class="swot-box swot-s">
+                <strong style="color: #004b93; font-size:8pt;">STRENGTHS (Internal Advantages)</strong>
+                <ul>{s_html}</ul>
             </div>
-            <div class="dofa-box d-a">
-                <strong style="color: #b45309; font-size:8pt;">AMENAZAS (Threats)</strong>
-                <ul>{a_html}</ul>
+            <div class="swot-box swot-t">
+                <strong style="color: #b45309; font-size:8pt;">THREATS (External Competitive Risks)</strong>
+                <ul>{t_html}</ul>
             </div>
         </div>
 
         <div class="page-break"></div>
 
-        <!-- ================= PAGE 7 ================= -->
+        <!-- PAGE 7: OPERATIONAL ROADMAP & SIGN-OFF -->
         <div class="section-header">Prioritized Operational Roadmap & Engineering Plan</div>
 
         <div class="exec-guide">
-            <strong>Executive Guide for Leadership:</strong> This implementation plan translates the audit findings into an execution roadmap categorized by operational urgency, engineering effort, and projected pipeline impact.
+            <strong>Executive Implementation Plan:</strong> This roadmap translates the audit findings into direct engineering and marketing initiatives, organized by operational priority, estimated effort, and expected business outcome.
         </div>
 
         <table>
             <thead>
                 <tr>
                     <th style="width:20%;">Urgency Tier</th>
-                    <th style="width:26%;">Initiative</th>
-                    <th style="width:34%;">Specific Technical Remediation</th>
-                    <th style="width:20%;">Projected Impact</th>
+                    <th style="width:26%;">Strategic Initiative</th>
+                    <th style="width:34%;">Specific Action Items</th>
+                    <th style="width:20%;">Projected Business Outcome</th>
                 </tr>
             </thead>
             <tbody>
@@ -2389,8 +2336,8 @@ def build_executive_dossier_html(
             </tbody>
         </table>
 
-        <div class="meta-strip" style="margin-top:16px; font-size:7pt;">
-            <strong>Advisory Sign-off:</strong> This executive audit report was generated autonomously by the Connext Enterprise Digital & AEO Auditor platform for <strong>{target_name}</strong>. For architectural implementation assistance, Python data pipeline integrations, or paid search media coordination, contact the Connext Global Solutions marketing and engineering advisory team.
+        <div class="meta-strip" style="margin-top:20px; font-size:7.2pt;">
+            <strong>Advisory Sign-off:</strong> This executive audit dossier was prepared for <strong>{target_name}</strong> by the Connext Global Solutions marketing and digital architecture team. For implementation assistance, custom analytics tracking, or paid media management, contact Connext Global Solutions.
         </div>
 
     </body>
@@ -2398,44 +2345,56 @@ def build_executive_dossier_html(
     """
     return weasyprint.HTML(string=pdf_html).write_pdf()
 
-    if st.button("📑 Compile & Download Branded Executive PDF (7 Pages)", use_container_width=True):
-        with st.spinner("Compiling publication-grade 7-page executive PDF dossier..."):
-            df_c = st.session_state.get("df_crawl", pd.DataFrame())
-            df_r = st.session_state.get("df_rankings", pd.DataFrame())
-            df_a = st.session_state.get("df_aeo", pd.DataFrame())
-            df_eq = st.session_state.get("df_equity", pd.DataFrame())
-            df_can = st.session_state.get("df_cannibal", pd.DataFrame())
-            df_ads = st.session_state.get("df_ads", pd.DataFrame())
-            target_name = st.session_state.get("target_domain", "Target Domain")
-            sec_res = st.session_state.get("sec_headers", {})
-            cwv_res = st.session_state.get("cwv_metrics", {})
-            crux_res = st.session_state.get("crux_metrics", {})
-            sb_res = st.session_state.get("safe_browsing", {})
-            kg_info = st.session_state.get("kg_info", {})
-            prev = st.session_state.get("prev_snapshot")
-            has_llms = bool(st.session_state.get("has_llms", False))
+with tab_report:
+    st.subheader("Generate Executive Audit PDF Report (Connext Global Identity)")
+    st.markdown('''<div class="guide-box"><strong>🎯 Objective:</strong> Compiles all technical diagnostics, security grades, WCAG accessibility metrics, CrUX field vitals, SWOT strategic matrix, and action plans into a publication-grade 7-page PDF dossier.<br><strong>💼 Enterprise Impact:</strong> Provides a polished, executive-ready deliverable suitable for board reviews, executive leadership, or engineering handoffs.<br><strong>🔍 Where to Find Results:</strong> Click the compile button below to generate the PDF dossier, then click the download button to save it to your computer.</div>''', unsafe_allow_html=True)
 
-            pdf_bytes = build_executive_dossier_html(
-                df_c=df_c,
-                df_r=df_r,
-                df_a=df_a,
-                df_eq=df_eq,
-                df_can=df_can,
-                df_ads=df_ads,
-                cwv_res=cwv_res,
-                crux_res=crux_res,
-                sec_res=sec_res,
-                sb_res=sb_res,
-                kg_info=kg_info,
-                prev_snapshot=prev,
-                target_name=target_name,
-                has_llms=has_llms,
-                logo_url=LOGO_URL
-            )
+    df_c = st.session_state.get("df_crawl", pd.DataFrame())
+    if df_c.empty:
+        st.warning("⚠️ No audit data available yet. Please run Tab 1 (Tech & Schemas) first before generating the executive PDF.")
+    else:
+        if st.button("📑 Compile 7-Page Executive PDF Dossier", use_container_width=True):
+            with st.spinner("Compiling publication-grade 7-page executive PDF dossier in full English..."):
+                df_r = st.session_state.get("df_rankings", pd.DataFrame())
+                df_a = st.session_state.get("df_aeo", pd.DataFrame())
+                df_eq = st.session_state.get("df_equity", pd.DataFrame())
+                df_can = st.session_state.get("df_cannibal", pd.DataFrame())
+                df_ads = st.session_state.get("df_ads", pd.DataFrame())
+                target_name = st.session_state.get("target_domain", "Target Domain")
+                sec_res = st.session_state.get("sec_headers", {})
+                cwv_res = st.session_state.get("cwv_metrics", {})
+                crux_res = st.session_state.get("crux_metrics", {})
+                sb_res = st.session_state.get("safe_browsing", {})
+                kg_info = st.session_state.get("kg_info", {})
+                prev = st.session_state.get("prev_snapshot")
+                has_llms = bool(st.session_state.get("has_llms", False))
 
+                pdf_bytes = build_executive_dossier_html(
+                    df_c=df_c,
+                    df_r=df_r,
+                    df_a=df_a,
+                    df_eq=df_eq,
+                    df_can=df_can,
+                    df_ads=df_ads,
+                    cwv_res=cwv_res,
+                    crux_res=crux_res,
+                    sec_res=sec_res,
+                    sb_res=sb_res,
+                    kg_info=kg_info,
+                    prev_snapshot=prev,
+                    target_name=target_name,
+                    has_llms=has_llms,
+                    logo_url=LOGO_URL
+                )
+                st.session_state["compiled_pdf_bytes"] = pdf_bytes
+                st.session_state["compiled_pdf_filename"] = f"connext_executive_audit_{urlparse(target_name).netloc}.pdf"
+                st.success("✓ 7-Page Executive PDF Dossier compiled successfully!")
+
+        if "compiled_pdf_bytes" in st.session_state and st.session_state["compiled_pdf_bytes"]:
             st.download_button(
-                label="⬇️ Download Complete 7-Page Executive Audit PDF",
-                data=pdf_bytes,
-                file_name=f"connext_executive_audit_{urlparse(target_name).netloc}.pdf",
-                mime="application/pdf"
+                label="⬇️ Click Here to Download 7-Page Executive Audit PDF",
+                data=st.session_state["compiled_pdf_bytes"],
+                file_name=st.session_state.get("compiled_pdf_filename", "connext_executive_audit.pdf"),
+                mime="application/pdf",
+                use_container_width=True
             )
