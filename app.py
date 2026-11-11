@@ -25,7 +25,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Connext Brand Styling
+# Connext Brand Styling: Deep Blue (#004b93), Orange (#e85122), Gold (#f2a900), Slate (#0f172a)
 st.markdown("""
 <style>
     .brand-title { color: #004b93; font-size: 24px; font-weight: 800; margin: 0; }
@@ -81,9 +81,9 @@ with st.sidebar:
         gemini_key = st.text_input("Gemini API Key (AI Studio)", type="password")
         
     if google_cloud_key:
-        st.success("✓ Google Cloud Key Connected (PageSpeed/CrUX/SafeBrowsing)")
+        st.success("✓ Google Cloud Connected (CWV/CrUX/SafeBrowsing/KG)")
     else:
-        google_cloud_key = st.text_input("Google Cloud API Key", type="password", help="Powers PageSpeed, Chrome UX (CrUX), and Safe Browsing.")
+        google_cloud_key = st.text_input("Google Cloud API Key", type="password", help="Powers PageSpeed, Chrome UX (CrUX), Safe Browsing, and Knowledge Graph Search.")
 
     st.markdown("---")
     st.subheader("Crawl Settings")
@@ -103,6 +103,7 @@ if "sec_headers" not in st.session_state: st.session_state["sec_headers"] = {}
 if "cwv_metrics" not in st.session_state: st.session_state["cwv_metrics"] = {}
 if "crux_metrics" not in st.session_state: st.session_state["crux_metrics"] = {}
 if "safe_browsing" not in st.session_state: st.session_state["safe_browsing"] = {}
+if "kg_info" not in st.session_state: st.session_state["kg_info"] = {}
 if "nlp_categories" not in st.session_state: st.session_state["nlp_categories"] = []
 if "prev_snapshot" not in st.session_state: st.session_state["prev_snapshot"] = None
 
@@ -124,7 +125,7 @@ with st.expander("📖 Platform Guide, Progress Tracking & Free API Setup Instru
     8. <span class="step-pill">Step 8</span> **Core Web Vitals & CrUX (Tab 7):** Measure Mobile Speed, TBT, LCP, and real-world Chrome field user vitals.
     9. <span class="step-pill">Step 9</span> **Progress Tracker (Tab 8):** Export your audit snapshot (`.json`), or upload a previous audit to calculate live progress deltas.
     10. <span class="step-pill">Step 10</span> **Schema Builder (Tab 9):** Build copy-paste `SoftwareApplication`, `Organization`, or `FAQPage` JSON-LD schemas.
-    11. <span class="step-pill">Step 11</span> **Executive Dashboard (Tab 10):** View the live Lighthouse/PSI-style health report, opportunities, and prioritized roadmap.
+    11. <span class="step-pill">Step 11</span> **Executive Dashboard (Tab 10):** View the live Lighthouse/PSI-style health report, benchmark graphs, and prioritized roadmap.
     12. <span class="step-pill">Step 12</span> **Branded Deliverable (Tab 11):** Export the complete executive PDF report.
     """, unsafe_allow_html=True)
 
@@ -146,7 +147,7 @@ tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_com
 ])
 
 # =============================================================================
-# TAB 1: ARCHITECTURE, SCHEMAS, METADATA, SAFE BROWSING & GEMINI NLP
+# TAB 1: ARCHITECTURE, SCHEMAS, METADATA, SAFE BROWSING & ENTITY INTELLIGENCE
 # =============================================================================
 with tab_arch:
     st.subheader("Sitemap Discovery, On-Page Metadata, Schemas & Security Audit")
@@ -183,7 +184,7 @@ with tab_arch:
         crawl_btn = st.button("🚀 Start Audit", use_container_width=True)
 
     if crawl_btn and target_site:
-        with st.spinner("Executing architecture audit, security check, and content extraction..."):
+        with st.spinner("Executing architecture audit, security check, Knowledge Graph lookup and extraction..."):
             parsed = urlparse(target_site)
             root = f"{parsed.scheme}://{parsed.netloc}"
             st.session_state["target_domain"] = target_site
@@ -228,7 +229,31 @@ with tab_arch:
                     safe_info = {"Status": "Check Error", "Details": str(e)}
             st.session_state["safe_browsing"] = safe_info
 
-            # C. Check llms.txt & robots.txt
+            # C. Google Knowledge Graph Search API Check (Brand Entity Recognition)
+            kg_info = {"Recognized": "Not Checked", "Entity_Name": "N/A", "Types": "N/A", "Score": 0, "Description": "API key required"}
+            if google_cloud_key:
+                try:
+                    brand_query = urlparse(target_site).netloc.replace("www.", "").split(".")[0].upper()
+                    kg_url = "https://kgsearch.googleapis.com/v1/entities:search"
+                    kg_params = {"query": brand_query, "key": google_cloud_key, "limit": 1, "indent": True}
+                    kg_res = requests.get(kg_url, params=kg_params, timeout=8).json()
+                    items = kg_res.get("itemListElement", [])
+                    if items:
+                        it = items[0].get("result", {})
+                        kg_info = {
+                            "Recognized": "✓ Verified Entity",
+                            "Entity_Name": it.get("name", brand_query),
+                            "Types": ", ".join(it.get("@type", [])),
+                            "Score": round(items[0].get("resultScore", 0), 2),
+                            "Description": it.get("detailedDescription", {}).get("articleBody", it.get("description", "Recognized Google Knowledge Entity"))
+                        }
+                    else:
+                        kg_info = {"Recognized": "🔴 Unrecognized / Ambiguous Entity", "Entity_Name": brand_query, "Types": "None", "Score": 0, "Description": "No Knowledge Graph entity detected"}
+                except Exception as e:
+                    kg_info = {"Recognized": "Check Failed", "Entity_Name": "N/A", "Types": "N/A", "Score": 0, "Description": str(e)}
+            st.session_state["kg_info"] = kg_info
+
+            # D. Check llms.txt & robots.txt
             try:
                 llms_r = requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5)
                 has_llms = (llms_r.status_code == 200)
@@ -243,7 +268,7 @@ with tab_arch:
                 has_robots = False
             st.session_state["has_robots"] = has_robots
 
-            # D. URL Pool Construction (Sitemap vs Specific URLs)
+            # E. URL Pool Construction (Sitemap vs Specific URLs)
             if crawl_mode == "🎯 Specific / Unique URLs (Direct Audit)":
                 custom_urls = [u.strip() for u in specific_urls_input.split("\n") if u.strip().startswith("http")]
                 url_pool = custom_urls if custom_urls else [target_site]
@@ -270,7 +295,7 @@ with tab_arch:
 
                 url_pool = list(found_urls)[:crawl_limit]
 
-            # E. Comprehensive On-Page Auditor
+            # F. Comprehensive On-Page Auditor
             def audit_page(url):
                 res = {
                     "URL": url,
@@ -283,6 +308,7 @@ with tab_arch:
                     "Meta_Desc_Status": "Missing",
                     "Missing_Alt_Pct": 0.0,
                     "Has_OG_Tags": False,
+                    "Total_Schemas": 0,
                     "Commercial_Schema": False,
                     "Schema_Types": "None",
                     "Word_Count": 0,
@@ -327,6 +353,7 @@ with tab_arch:
                         
                         # Schemas
                         scripts = soup.find_all("script", type="application/ld+json")
+                        res["Total_Schemas"] = len(scripts)
                         types = []
                         for s in scripts:
                             if s.string:
@@ -356,7 +383,7 @@ with tab_arch:
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
 
-            # F. Topical Categorization via Gemini API
+            # G. Topical Categorization via Gemini API
             if gemini_key and not df_crawl.empty:
                 try:
                     genai.configure(api_key=gemini_key)
@@ -382,6 +409,7 @@ Respond strictly in valid JSON format:
         df = st.session_state["df_crawl"]
         sec = st.session_state.get("sec_headers", {})
         sb = st.session_state.get("safe_browsing", {})
+        kg = st.session_state.get("kg_info", {})
         
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Pages Analyzed", len(df))
@@ -389,6 +417,15 @@ Respond strictly in valid JSON format:
         m3.metric("Mashed H1s", f"{df['Concatenated_H1'].sum()} URLs")
         m4.metric("Security Grade", sec.get("Grade", "N/A"))
         m5.metric("Google Safe Browsing", sb.get("Status", "N/A"))
+
+        # Knowledge Graph Entity Verification Card
+        if kg.get("Recognized") and kg.get("Recognized") != "Not Checked":
+            st.markdown("##### 🏛️ Google Knowledge Graph Entity Recognition (AI & AEO Trust Anchor)")
+            c_kg1, c_kg2, c_kg3 = st.columns([1, 2, 3])
+            c_kg1.metric("Entity Status", kg.get("Recognized", "N/A"))
+            c_kg2.metric("Entity Name & Type", f"{kg.get('Entity_Name')} ({kg.get('Types')})")
+            c_kg3.metric("Entity Confidence Score", f"{kg.get('Score', 0)}")
+            st.caption(f"**Knowledge Graph Description:** {kg.get('Description')}")
 
         # NLP Topical Categorization
         if st.session_state.get("nlp_categories"):
@@ -423,6 +460,17 @@ Respond strictly in valid JSON format:
             display_df[["URL", "H1_Count", "Concatenated_H1", "Meta_Desc_Status", "Missing_Alt_Pct", "Has_OG_Tags", "Commercial_Schema", "Word_Count"]],
             use_container_width=True
         )
+
+        # Visual Chart: Schema Implementation Breakdown
+        st.markdown("##### 📊 Commercial Schema Implementation Breakdown")
+        schema_breakdown = pd.DataFrame({
+            "Count": [
+                int(df['Commercial_Schema'].sum()),
+                max(0, int(df['Schema_Types'].str.contains('Breadcrumb', case=False, na=False).sum() - df['Commercial_Schema'].sum())),
+                int((df['Total_Schemas'] == 0).sum())
+            ]
+        }, index=["Commercial Schema (Product/Service/App)", "BreadcrumbList Only", "Zero Schema (Void)"])
+        st.bar_chart(schema_breakdown, color="#004b93")
 
         col_d1, col_d2 = st.columns(2)
         with col_d1:
@@ -615,6 +663,11 @@ with tab_equity:
         m_e1.metric("Commercial Pages Orphaned from Blog", f"{orphan_pct:.1f}%", help="Pages receiving zero links from content assets.")
         m_e2.metric("Total Offerings Evaluated", len(df_eq))
         
+        # Visual Chart: Internal Link Equity Breakdown
+        st.markdown("##### 📊 Internal Link Equity Distribution Across Offerings")
+        tier_counts = df_eq["Equity_Status"].value_counts()
+        st.bar_chart(tier_counts, color="#e85122")
+        
         st.dataframe(df_eq, use_container_width=True)
         st.download_button(
             label="⬇️ Download Internal Link Equity Audit (CSV)",
@@ -664,6 +717,13 @@ with tab_cannibal:
         if not st.session_state["df_cannibal"].empty:
             df_can = st.session_state["df_cannibal"]
             st.metric("Cannibalization Conflicts Flagged", len(df_can))
+            
+            # Visual Chart: Top Overlapping Pairs
+            st.markdown("##### 📊 Top Content Overlap & Cannibalization Severity")
+            top_can = df_can.head(8).copy()
+            top_can["Comparison Pair"] = top_can["URL_1"].apply(lambda x: x.rstrip('/').split('/')[-1]) + " vs " + top_can["URL_2"].apply(lambda x: x.rstrip('/').split('/')[-1])
+            st.bar_chart(top_can.set_index("Comparison Pair")["Cosine_Similarity"], color="#dc2626")
+
             st.dataframe(df_can, use_container_width=True)
             st.download_button(
                 label="⬇️ Download Cannibalization Report (CSV)",
@@ -746,6 +806,22 @@ with tab_serp:
         c1, c2 = st.columns(2)
         c1.metric("Organic Invisibility Rate (Absent from Top 20)", f"{invisibility_pct:.1f}%")
         c2.metric("Top Competitor Infiltration", f"{len(df_r['Top_Ranking_Competitor'].unique())} Unique Domains")
+
+        # Visual Chart: SERP Visibility Tier Breakdown
+        st.markdown("##### 📊 Organic Search Positioning Tier Distribution")
+        def parse_rank_tier(x):
+            if x.startswith("#"):
+                num_str = "".join([c for c in x if c.isdigit()])
+                if num_str:
+                    val = int(num_str)
+                    if val <= 3: return "Top 3 Organic (#1-#3)"
+                    elif val <= 10: return "Page 1 (#4-#10)"
+                    else: return "Page 2+ (11-20)"
+            return "Absent (> 20)"
+        
+        rank_counts = df_r["Target_Rank"].apply(parse_rank_tier).value_counts()
+        st.bar_chart(rank_counts, color="#004b93")
+
         st.dataframe(df_r, use_container_width=True)
         st.download_button(
             label="⬇️ Download SERP Rankings (CSV)",
@@ -825,6 +901,11 @@ with tab_aeo:
         loss_rate = (competitor_wins / len(df_a)) * 100
         
         st.metric("Generative AI Competitor Win Rate", f"{loss_rate:.1f}%", help="Percentage of AI Overviews won by competitors or third parties.")
+        
+        # Visual Chart: AEO Win vs Loss
+        st.markdown("##### 📊 AI Overview Recommendation Win vs. Loss Ratio")
+        st.bar_chart(df_a["Outcome"].value_counts(), color="#f2a900")
+
         st.dataframe(df_a, use_container_width=True)
         st.download_button(
             label="⬇️ Download AEO Citations Report (CSV)",
@@ -885,6 +966,11 @@ with tab_ads:
     if not st.session_state["df_ads"].empty:
         df_ad = st.session_state["df_ads"]
         st.metric("Total Active Google Ads Creatives", len(df_ad))
+        
+        # Visual Chart: Ad Types Breakdown
+        st.markdown("##### 📊 Active Ad Creative Formats Distribution")
+        st.bar_chart(df_ad["Type"].value_counts(), color="#004b93")
+
         st.dataframe(df_ad[["Creative_ID", "Format", "Type", "First_Shown", "Last_Shown", "Preview_Link"]], use_container_width=True)
         st.download_button(
             label="⬇️ Download Active Ads Inventory (CSV)",
@@ -1162,6 +1248,7 @@ with tab_dashboard:
     sec_res = st.session_state.get("sec_headers", {})
     cwv_res = st.session_state.get("cwv_metrics", {})
     sb_res = st.session_state.get("safe_browsing", {})
+    kg = st.session_state.get("kg_info", {})
     has_llms = st.session_state.get("has_llms", False)
 
     if df_c.empty:
@@ -1216,6 +1303,14 @@ with tab_dashboard:
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Visual Benchmark Chart: Current Performance vs Enterprise Standards
+        st.markdown("#### 📈 Multi-Pillar Performance vs Enterprise Thresholds")
+        perf_df = pd.DataFrame({
+            "Current Domain Score": [score_seo, score_schema, score_aeo, score_cwv, score_sec],
+            "Enterprise Target Benchmark": [85, 100, 80, 90, 95]
+        }, index=["Organic Visibility", "Commercial Schema", "Generative AEO", "Mobile Speed", "Security & Edge"])
+        st.bar_chart(perf_df, color=["#e85122", "#004b93"])
 
         # 2. PSI-Style Opportunities (Red Flags / High Impact)
         st.markdown("### 🔴 Critical Deficits & High-Impact Opportunities")
