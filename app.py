@@ -39,7 +39,6 @@ st.markdown("""
     .step-pill { background: #004b93; color: white; border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: bold; margin-right: 6px; }
     .metric-delta-pos { color: #16a34a; font-weight: bold; }
     .metric-delta-neg { color: #dc2626; font-weight: bold; }
-    .intent-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,7 +95,6 @@ def query_gemini_dynamic(prompt, api_key):
     except Exception:
         pass
 
-    # Call generateContent with discovered models
     for m in candidate_models:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
@@ -289,12 +287,25 @@ with tab_arch:
                     kg_info = {"Recognized": "Check Failed", "Entity_Name": "N/A", "Types": "N/A", "Score": 0, "Description": str(e)}
             st.session_state["kg_info"] = kg_info
 
-            # Check llms.txt & robots.txt
+            # D. Check llms.txt (Validates HTTP 200, Non-Empty, and NOT Soft-404 HTML) & robots.txt
             try:
-                has_llms = (requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5).status_code == 200)
+                llms_r = requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5)
+                has_llms = (
+                    llms_r.status_code == 200 and
+                    len(llms_r.text.strip()) > 10 and
+                    "<html" not in llms_r.text.lower() and
+                    "<!doctype" not in llms_r.text.lower()
+                )
             except Exception:
                 has_llms = False
             st.session_state["has_llms"] = has_llms
+
+            try:
+                robots_r = requests.get(f"{root}/robots.txt", headers=HEADERS, timeout=5)
+                has_robots = (robots_r.status_code == 200)
+            except Exception:
+                has_robots = False
+            st.session_state["has_robots"] = has_robots
 
             # URL Discovery
             if crawl_mode == "🎯 Specific / Unique URLs (Direct Audit)":
@@ -385,6 +396,7 @@ with tab_arch:
 
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
+            st.session_state["is_thin_site"] = (len(df_crawl) <= 2)
 
             # Topical Categorization via Dynamic Gemini Call
             if gemini_key and not df_crawl.empty:
@@ -413,12 +425,17 @@ Respond strictly in valid JSON format:
         sb = st.session_state.get("safe_browsing", {})
         kg = st.session_state.get("kg_info", {})
         
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Pages Analyzed", len(df))
+        # Severe Thin Site Architecture Callout Alert
+        if len(df) <= 2:
+            st.error(f"🚨 **Critical Architecture Risk: Severe Topical Thinness Detected ({len(df)} page(s) found)**. Websites with only 1–2 pages find it virtually impossible to rank organically or establish topical authority because search engines require dedicated, schema-marked URLs for each distinct solution, service, or buyer use-case. Add dedicated service/solution pages to build ranking authority.")
+
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Pages Analyzed", len(df), delta="⚠️ Thin Site (<3)" if len(df) <= 2 else "Normal Footprint", delta_color="inverse" if len(df) <= 2 else "normal")
         m2.metric("Commercial Schemas", f"{(df['Commercial_Schema'].sum()/len(df)*100):.1f}%")
         m3.metric("Mashed H1s", f"{df['Concatenated_H1'].sum()} URLs")
         m4.metric("Security Grade", sec.get("Grade", "N/A"))
-        m5.metric("Google Safe Browsing", sb.get("Status", "N/A"))
+        m5.metric("Safe Browsing", sb.get("Status", "N/A"))
+        m6.metric("llms.txt AI Index", "✓ Active (200)" if st.session_state.get("has_llms") else "🔴 Missing (404)")
 
         # Knowledge Graph Verification
         if kg.get("Recognized") and kg.get("Recognized") != "Not Checked":
@@ -550,7 +567,7 @@ Format response strictly in valid JSON without backticks:
                     except Exception:
                         parsed_data = {}
 
-                # Intelligent multi-cluster fallback if API or JSON had an issue
+                # Intelligent multi-cluster fallback
                 if not parsed_data or not parsed_data.get("organic_commercial"):
                     model_used = "Intelligent Multi-Cluster Heuristic Engine"
                     stop_words = {"helping", "families", "access", "science", "tomorrow", "today", "the", "of", "and", "in", "to", "for", "a", "with", "about", "contact"}
@@ -600,7 +617,6 @@ Format response strictly in valid JSON without backticks:
                 st.session_state["df_organic_suggestions"] = df_org
                 st.session_state["df_aeo_suggestions"] = df_aeo
 
-                # Pre-populate Tab 4 and Tab 5 with full lists
                 st.session_state["suggested_organic_kws"] = "\n".join(df_org["Keyword / Query"].tolist())
                 st.session_state["suggested_aeo_prompts"] = "\n".join(df_aeo["Generative AI Prompt / Topic"].tolist())
 
@@ -1294,20 +1310,24 @@ with tab_dashboard:
     cwv_res = st.session_state.get("cwv_metrics", {})
     sb_res = st.session_state.get("safe_browsing", {})
     kg = st.session_state.get("kg_info", {})
+    has_llms = st.session_state.get("has_llms", False)
 
     if df_c.empty:
         st.info("💡 Run the site audit in Tab 1 (Tech & Schemas) first to populate the Executive Report.")
     else:
         total_pages = len(df_c)
+        is_thin_site = (total_pages <= 2)
         schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
         invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 89.6
         aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 94.3
         orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty else 71.7
         mashed_count = int(df_c["Concatenated_H1"].sum())
         
-        score_seo = max(10, round(100 - (invis_pct * 0.7 + (mashed_count / max(1, total_pages) * 30))))
+        # Pillar Scores (Caps organic score at 25 if site has <= 2 pages)
+        base_seo = max(10, round(100 - (invis_pct * 0.7 + (mashed_count / max(1, total_pages) * 30))))
+        score_seo = min(base_seo, 25) if is_thin_site else base_seo
         score_schema = round(schema_pct)
-        score_aeo = max(5, round(100 - aeo_loss_pct))
+        score_aeo = min(max(5, round(100 - aeo_loss_pct)), 30 if is_thin_site else 100)
         score_cwv = cwv_res.get("Score", 68) if cwv_res.get("Score") != "N/A" else 68
         score_sec = 95 if "A" in sec_res.get("Grade", "A") else (75 if "B" in sec_res.get("Grade", "") else 45)
 
@@ -1353,6 +1373,20 @@ with tab_dashboard:
         st.bar_chart(perf_df, color=["#e85122", "#004b93"])
 
         st.markdown("### 🔴 Critical Deficits & High-Impact Opportunities")
+
+        # Opportunity: Severe Thin Site
+        if is_thin_site:
+            with st.expander(f"🚨 Severe Topical Thinness: Single-Page / Low Page Count Architecture ({total_pages} page(s) detected)", expanded=True):
+                st.markdown(f"""
+                * **Impact:** 🔴 **Critical Architectural Blocker (Organic Invisibility Guaranteed)**
+                * **Finding:** The domain contains only **{total_pages} crawled page(s)**. Search engines (Google) and generative AI engines (ChatGPT, Perplexity, Gemini) rank *specific URLs* that directly satisfy specific commercial search intent. With only 1–2 pages, the domain has no dedicated URLs for individual solutions, services, features, or case studies.
+                * **Why Ranking is Impossible:**
+                  1. **Zero Topical Authority:** Search algorithms cannot map topical entity depth or build internal link equity on a single-page site.
+                  2. **Keyword Cannibalization on Root:** All target keywords are forced onto the homepage, confusing crawlers as to the primary topic.
+                  3. **Schema Void:** You cannot inject distinct `SoftwareApplication`, `Service`, or `Product` schemas for individual offerings.
+                * **Remediation:** Architect a multi-page commercial silo structure immediately: deploy dedicated URLs for each offering (e.g., `/solutions/[offering]`, `/products/[offering]`), create dedicated `/about` and `/contact` pages, and inject individual JSON-LD schemas on each.
+                """)
+
         with st.expander(f"⚠️ Zero Commercial Structured Data Schemas (Found on {score_schema}% of pages)", expanded=True):
             st.markdown(f"""
             * **Impact:** 🔴 **Critical (High Opportunity)**
@@ -1370,21 +1404,36 @@ with tab_dashboard:
         with st.expander(f"⚠️ Generative AI Overview Omission (Competitors win {aeo_loss_pct:.1f}% of AI answers)", expanded=True):
             st.markdown(f"""
             * **Impact:** 🔴 **Critical (Future-Proofing AEO)**
-            * **Finding:** In comparative vendor queries, LLMs and Google AI Overviews cite competitors due to market definition density.
+            * **Finding:** In comparative vendor queries, LLMs and Google AI Overviews cite competitors due to factual definition density.
             * **Remediation:** Rewrite the first 45 words of every commercial solution hub to start with clear, factual definitions.
             """)
 
-        with st.expander("⚠️ Missing Machine-Readable AI Index (llms.txt Returns 404)", expanded=False):
-            st.markdown("""
-            * **Impact:** 🟠 **High Priority**
-            * **Finding:** Root `llms.txt` is missing (404 error). AI crawlers (Perplexity, ChatGPT Search, Claude) cannot efficiently map the product catalog.
-            * **Remediation:** Download the custom `llms.txt` generated in **Tab 1** and upload it to the domain root.
-            """)
+        # Opportunity: Dynamic llms.txt Warning (Only shows if llms.txt is genuinely absent)
+        if not has_llms:
+            with st.expander(f"⚠️ Missing Machine-Readable AI Index ({urlparse(target_name).netloc}/llms.txt Returns 404)", expanded=False):
+                st.markdown(f"""
+                * **Impact:** 🟠 **High Priority (Generative AEO Blocker)**
+                * **Finding:** `{urlparse(target_name).netloc}/llms.txt` is missing (returns 404 error or soft-404 HTML). Autonomous AI crawlers (Perplexity, ChatGPT Search, Claude) cannot efficiently map and ingest the domain's product catalog.
+                * **Remediation:** Download the custom `llms.txt` generated in **Tab 1** and upload it to the root of the server.
+                """)
+
+        if mashed_count > 0:
+            with st.expander(f"⚠️ H1 Heading Concatenation Bug ({mashed_count} URLs affected)", expanded=False):
+                st.markdown(f"""
+                * **Impact:** 🟠 **High Priority**
+                * **Finding:** Stylized heading components omit standard spacing, causing crawlers to index merged keywords like `poweredCPQ`.
+                * **Remediation:** Add a CSS whitespace separation between differently colored text blocks in the heading component.
+                """)
 
         st.markdown("---")
         st.markdown("### 🟢 Passed Audits & Institutional Strengths")
+        llms_passed_html = '<div style="margin-bottom:8px;">✅ <strong>Machine-Readable AI Standard (llms.txt Active):</strong> Verified active <code>/llms.txt</code> endpoint serving plain-text Markdown for autonomous AI answer engine indexing.</div>' if has_llms else ''
+        depth_passed_html = f'<div style="margin-bottom:8px;">✅ <strong>Commercial Footprint Depth ({total_pages} Pages):</strong> Multi-page architecture provides dedicated URLs for specialized topical keyword targeting.</div>' if not is_thin_site else ''
+
         st.markdown(f"""
         <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:14px; font-size:13px;">
+            {depth_passed_html}
+            {llms_passed_html}
             <div style="margin-bottom:8px;">✅ <strong>Enterprise Perimeter Security ({sec_res.get('Grade', 'Grade A+')}):</strong> Strict-Transport-Security (HSTS), Content Security Policy (CSP), and anti-clickjacking protections are actively enforced.</div>
             <div style="margin-bottom:8px;">✅ <strong>Google Safe Browsing Certification:</strong> Domain is certified clean with zero malware, social engineering, or deceptive software flags.</div>
             <div style="margin-bottom:8px;">✅ <strong>Zero Cumulative Layout Shift (CLS: 0.000):</strong> Clean visual stability with no shifting layout elements during initial render.</div>
@@ -1394,16 +1443,34 @@ with tab_dashboard:
 
         st.markdown("---")
         st.markdown("### 📋 Prioritized Action Plan by Operational Urgency")
-        action_plan_data = [
+        action_plan_data = []
+        if is_thin_site:
+            action_plan_data.append({
+                "Priority": "Priority 1 (Critical Blocker)",
+                "Initiative": "Multi-Page Topical Hierarchy Buildout",
+                "Action": f"Expand from {total_pages} page(s) into dedicated commercial leaf URLs for each core solution and service.",
+                "Effort": "High (1-2 weeks)",
+                "Impact": "Essential prerequisite for any organic rankings or AEO citations"
+            })
+        action_plan_data.extend([
             {"Priority": "Priority 1 (Critical)", "Initiative": "H1 Heading Concatenation Fix", "Action": "Add space delimiter between stylized spans in template.", "Effort": "Low (1 hour)", "Impact": "Immediate keyword indexing fix"},
             {"Priority": "Priority 1 (Critical)", "Initiative": "Noindex Campaign Landing Pages", "Action": "Inject noindex, follow on /lp/ pages to resolve cannibalization.", "Effort": "Low (2 hours)", "Impact": "Eliminates internal competition"},
             {"Priority": "Priority 1 (Critical)", "Initiative": "Defer Third-Party Tracking Scripts", "Action": "Defer heavy third-party marketing tags on mobile until post-LCP.", "Effort": "Medium (1 day)", "Impact": "Reduces mobile TBT significantly"},
-            {"Priority": "Priority 2 (High Impact)", "Initiative": "Deploy Schema.org JSON-LD", "Action": "Inject SoftwareApplication, Organization, and FAQPage schemas.", "Effort": "Medium (2-3 days)", "Impact": "Lifts rich snippet eligibility"},
-            {"Priority": "Priority 2 (High Impact)", "Initiative": "Publish llms.txt Standard", "Action": "Deploy root llms.txt file generated in Tab 1.", "Effort": "Low (30 min)", "Impact": "Preferential extraction by ChatGPT & Perplexity"},
+            {"Priority": "Priority 2 (High Impact)", "Initiative": "Deploy Schema.org JSON-LD", "Action": "Inject SoftwareApplication, Organization, and FAQPage schemas.", "Effort": "Medium (2-3 days)", "Impact": "Lifts rich snippet eligibility"}
+        ])
+        if not has_llms:
+            action_plan_data.append({
+                "Priority": "Priority 2 (High Impact)",
+                "Initiative": "Publish llms.txt Standard",
+                "Action": "Deploy root llms.txt file generated in Tab 1.",
+                "Effort": "Low (30 min)",
+                "Impact": "Preferential extraction by ChatGPT & Perplexity"
+            })
+        action_plan_data.extend([
             {"Priority": "Priority 2 (High Impact)", "Initiative": "Inverted-Pyramid AEO Copy Rewrites", "Action": "Rewrite opening 45 words of each product page with direct, factual definitions.", "Effort": "Medium (1 week)", "Impact": "Increases AI Overview citation rate"},
             {"Priority": "Priority 3 (Growth)", "Initiative": "Transactional Google Search Ads", "Action": "Capture high-intent transactional search queries.", "Effort": "Medium (Ongoing)", "Impact": "Recovers #1 sponsored spots from competitors"},
             {"Priority": "Priority 3 (Growth)", "Initiative": "Editorial Internal Link Remediation", "Action": "Add contextual keyword links from top blog posts to orphaned commercial hubs.", "Effort": "Low (2 days)", "Impact": "Resolves link equity deficits"}
-        ]
+        ])
         st.dataframe(pd.DataFrame(action_plan_data), use_container_width=True)
 
 # =============================================================================
@@ -1426,6 +1493,9 @@ with tab_report:
             prev = st.session_state.get("prev_snapshot")
 
             total_pages = len(df_c) if not df_c.empty else 0
+            is_thin_flag = (total_pages <= 2)
+            has_llms_flag = bool(st.session_state.get('has_llms', False))
+
             comm_schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
             invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 0
             aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 0
@@ -1452,6 +1522,15 @@ with tab_report:
                     • Orphaned Hubs: {prev.get('orphan_pct', 0):.1f}% ➔ {orphan_pct:.1f}% ({orphan_pct - prev.get('orphan_pct',0):.1f}%)
                 </div>
                 """
+
+            # Build Dynamic DOFA Items
+            d_thin = f"<li><strong>Severe Topical Thinness ({total_pages} page(s)):</strong> Domain lacks dedicated solution leaf pages, making commercial ranking impossible.</li>" if is_thin_flag else ""
+            d_llms = "<li>Root llms.txt standard returns 404 error (omits generative AI crawler guidance).</li>" if not has_llms_flag else ""
+            f_llms = "<li>Verified /llms.txt standard deployed at root for autonomous AI engine ingestion.</li>" if has_llms_flag else ""
+            f_depth = f"<li>Multi-page commercial structure ({total_pages} URLs) enables granular keyword clustering.</li>" if not is_thin_flag else ""
+            o_thin = "<li><strong>Information Architecture Expansion:</strong> Deploy dedicated commercial leaf pages (/solutions/, /services/, /pricing/) to establish topical search authority.</li>" if is_thin_flag else ""
+            o_llms = "<li>Publish structured llms.txt for preferential AI crawling.</li>" if not has_llms_flag else ""
+            a_thin = "<li>Competitors with 20+ dedicated solution pages capture 100% of organic and generative search traffic in this sector.</li>" if is_thin_flag else ""
 
             pdf_html = f"""
             <!DOCTYPE html>
@@ -1490,7 +1569,7 @@ with tab_report:
                     </div>
                 </div>
 
-                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security Grade:</strong> {sec_res.get('Grade', 'N/A')} | <strong>Safe Browsing:</strong> {sb_res.get('Status', 'N/A')} | <strong>Mobile Score:</strong> {cwv_res.get('Score', 'N/A')}/100 | <strong>llms.txt:</strong> {'Active' if st.session_state.get('has_llms') else 'Missing (404)'}</p>
+                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security Grade:</strong> {sec_res.get('Grade', 'N/A')} | <strong>Site Footprint:</strong> {'⚠️ Critical Thinness (' + str(total_pages) + ' page(s))' if is_thin_flag else str(total_pages) + ' Pages'} | <strong>llms.txt:</strong> {'✓ Active (200)' if has_llms_flag else '🔴 Missing (404)'}</p>
 
                 {progress_html}
 
@@ -1522,8 +1601,9 @@ with tab_report:
                     <div class="dofa-box d-d">
                         <strong style="color: #dc2626;">DEBILIDADES (Weaknesses)</strong>
                         <ul>
+                            {d_thin}
                             <li>Zero commercial structured schema markup ({comm_schema_pct:.1f}%).</li>
-                            <li>Root llms.txt standard returns 404 error.</li>
+                            {d_llms}
                             <li>Concatenated words in H1 headings due to component styling.</li>
                             <li>High commercial orphan rate ({orphan_pct:.1f}%) from editorial archive.</li>
                         </ul>
@@ -1531,9 +1611,10 @@ with tab_report:
                     <div class="dofa-box d-o">
                         <strong style="color: #16a34a;">OPORTUNIDADES (Opportunities)</strong>
                         <ul>
+                            {o_thin}
                             <li>Implement Organization, Service & FAQ schemas for rich snippets.</li>
                             <li>Capture commercial buyer search intent via Paid Search.</li>
-                            <li>Publish structured llms.txt for preferential AI crawling.</li>
+                            {o_llms}
                             <li>Channel editorial PageRank to core commercial platforms.</li>
                         </ul>
                     </div>
@@ -1543,11 +1624,14 @@ with tab_report:
                             <li>Modern headless architecture on decoupled edge infrastructure.</li>
                             <li>Enterprise security grade ({sec_res.get('Grade', 'N/A')}: HSTS, CSP strict policies).</li>
                             <li>Visual stability (CLS: {cwv_res.get('CLS', '0.000')}).</li>
+                            {f_llms}
+                            {f_depth}
                         </ul>
                     </div>
                     <div class="dofa-box d-a">
                         <strong style="color: #b45309;">AMENAZAS (Threats)</strong>
                         <ul>
+                            {a_thin}
                             <li>Competitors winning {aeo_loss_pct:.1f}% of Generative AI Overviews.</li>
                             <li>Niche rivals conquesting #1 sponsored ad positions.</li>
                         </ul>
