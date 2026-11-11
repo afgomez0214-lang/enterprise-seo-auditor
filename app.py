@@ -10,6 +10,7 @@ import re
 import json
 import os
 import math
+from datetime import datetime
 from collections import Counter
 import google.generativeai as genai
 
@@ -24,13 +25,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# Connext Brand Palette: Deep Blue (#004b93), Orange (#e85122), Gold (#f2a900), Slate (#0f172a)
+# Connext Brand Styling: Deep Blue (#004b93), Orange (#e85122), Gold (#f2a900), Slate (#0f172a)
 st.markdown("""
 <style>
     .brand-title { color: #004b93; font-size: 24px; font-weight: 800; margin: 0; }
     .brand-sub { color: #e85122; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; margin-top: 2px; }
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 4px 4px 0 0; padding: 6px 12px; font-weight: 600; color: #1e293b; font-size: 12.5px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 3px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 4px 4px 0 0; padding: 6px 11px; font-weight: 600; color: #1e293b; font-size: 12px; }
     .stTabs [aria-selected="true"] { background-color: #004b93 !important; color: white !important; }
     .stButton>button { background-color: #004b93; color: white; font-weight: bold; border-radius: 4px; border: none; }
     .stButton>button:hover { background-color: #e85122; color: white; }
@@ -49,7 +50,7 @@ with col_logo:
 
 with col_text:
     st.markdown('<div class="brand-title">Enterprise Digital Performance, AEO & Search Intelligence</div>', unsafe_allow_html=True)
-    st.markdown('<div class="brand-sub">CONNEXT GLOBAL SOLUTIONS — PROPRIETARY AUDIT PLATFORM</div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-sub">CONNEXT GLOBAL SOLUTIONS — PROPRIETARY ENTERPRISE AUDIT SUITE</div>', unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -58,7 +59,7 @@ st.markdown("---")
 # -----------------------------------------------------------------------------
 serpapi_key = st.secrets.get("SERPAPI_KEY", "")
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-pagespeed_key = st.secrets.get("PAGESPEED_API_KEY", "")
+google_cloud_key = st.secrets.get("PAGESPEED_API_KEY", "") or st.secrets.get("GOOGLE_CLOUD_KEY", "")
 
 with st.sidebar:
     try:
@@ -77,10 +78,10 @@ with st.sidebar:
     else:
         gemini_key = st.text_input("Gemini API Key (AI Studio)", type="password")
         
-    if pagespeed_key:
-        st.success("✓ Google PageSpeed Connected")
+    if google_cloud_key:
+        st.success("✓ Google Cloud Key Connected (PageSpeed/CrUX/SafeBrowsing)")
     else:
-        pagespeed_key = st.text_input("Google PageSpeed Key", type="password")
+        google_cloud_key = st.text_input("Google Cloud API Key", type="password", help="Powers PageSpeed, Chrome UX (CrUX), and Safe Browsing.")
 
     st.markdown("---")
     st.subheader("Crawl Settings")
@@ -98,44 +99,50 @@ if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_
 if "suggested_aeo_prompts" not in st.session_state: st.session_state["suggested_aeo_prompts"] = ""
 if "sec_headers" not in st.session_state: st.session_state["sec_headers"] = {}
 if "cwv_metrics" not in st.session_state: st.session_state["cwv_metrics"] = {}
+if "crux_metrics" not in st.session_state: st.session_state["crux_metrics"] = {}
+if "safe_browsing" not in st.session_state: st.session_state["safe_browsing"] = {}
+if "nlp_categories" not in st.session_state: st.session_state["nlp_categories"] = []
+if "prev_snapshot" not in st.session_state: st.session_state["prev_snapshot"] = None
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 # -----------------------------------------------------------------------------
 # 2. BUILT-IN OPERATIONAL INSTRUCTIONS & SETUP GUIDE
 # -----------------------------------------------------------------------------
-with st.expander("📖 Platform Guide & Free API Setup Instructions (Click to expand)", expanded=False):
+with st.expander("📖 Platform Guide, Progress Tracking & Free API Setup Instructions", expanded=False):
     st.markdown("""
-    ### 🚀 Recommended Audit Workflow
-    1. <span class="step-pill">Step 1</span> **Architecture & Technical Scan (Tab 1):** Enter the target domain (`https://www.csgi.com`) and click **Start Multi-Page Audit**. Scans sitemaps, headings, metadata, image alt tags, security headers, and checks `llms.txt`.
-    2. <span class="step-pill">Step 2</span> **AI Keywords (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts** to auto-generate keywords from crawled offerings.
+    ### 🚀 Recommended Audit & Tracking Workflow
+    1. <span class="step-pill">Step 1</span> **Architecture & Technical Scan (Tab 1):** Enter the target domain (`https://www.csgi.com`) and click **Start Multi-Page Audit**. Audits sitemaps, headings, metadata, alt text, security headers, Google Safe Browsing, and checks `llms.txt`.
+    2. <span class="step-pill">Step 2</span> **AI Keywords (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts** to automatically generate targeted commercial queries.
     3. <span class="step-pill">Step 3</span> **Internal Link Equity (Tab 2):** Crawl content assets to detect orphaned product pages and unoptimized anchors.
     4. <span class="step-pill">Step 4</span> **Cannibalization (Tab 3):** Run TF-IDF cosine similarity to flag conflicting pages (e.g., `/lp/` vs product hubs).
     5. <span class="step-pill">Step 5</span> **Organic SERP (Tab 4):** Check live Google Search rankings via SerpApi.
     6. <span class="step-pill">Step 6</span> **Generative AEO (Tab 5):** Check whether Google AI Overviews cite the target domain or competitors.
     7. <span class="step-pill">Step 7</span> **Paid Ads Intel (Tab 6):** Extract live ad creatives from the Google Ads Transparency Center.
-    8. <span class="step-pill">Step 8</span> **Core Web Vitals (Tab 7):** Measure Mobile Speed, TBT, LCP, and CLS via Google PageSpeed API.
-    9. <span class="step-pill">Step 9</span> **Schema Generator (Tab 8):** Build copy-paste `SoftwareApplication`, `Organization`, or `FAQPage` JSON-LD schemas.
-    10. <span class="step-pill">Step 10</span> **Branded Deliverable (Tab 9):** Export the complete executive PDF report.
+    8. <span class="step-pill">Step 8</span> **Core Web Vitals & CrUX (Tab 7):** Measure Mobile Speed, TBT, LCP, and real-world Chrome field user vitals.
+    9. <span class="step-pill">Step 9</span> **Progress Tracker (Tab 8):** Export your audit snapshot (`.json`), or upload a previous audit to calculate live progress deltas.
+    10. <span class="step-pill">Step 10</span> **Schema Builder (Tab 9):** Build copy-paste `SoftwareApplication`, `Organization`, or `FAQPage` JSON-LD schemas.
+    11. <span class="step-pill">Step 11</span> **Branded Deliverable (Tab 10):** Export the complete executive PDF report.
     """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 3. WORKSPACE TABS
 # -----------------------------------------------------------------------------
-tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_schema_gen, tab_report = st.tabs([
+tab_arch, tab_equity, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_cwv, tab_compare, tab_schema_gen, tab_report = st.tabs([
     "🌐 1. Tech & Schemas",
     "🔗 2. Internal Equity",
     "🔀 3. Cannibalization",
     "📈 4. Organic SERP",
     "🤖 5. Generative AEO",
     "🎯 6. Paid Ads Intel",
-    "⚡ 7. Core Web Vitals",
-    "⚙️ 8. Schema Builder",
-    "📄 9. Connext Branded PDF"
+    "⚡ 7. Web Vitals & CrUX",
+    "🔄 8. Progress Tracker",
+    "⚙️ 9. Schema Builder",
+    "📄 10. Connext PDF"
 ])
 
 # =============================================================================
-# TAB 1: ARCHITECTURE, SCHEMAS, METADATA & SECURITY
+# TAB 1: ARCHITECTURE, SCHEMAS, METADATA, SAFE BROWSING & GEMINI NLP
 # =============================================================================
 with tab_arch:
     st.subheader("Sitemap Discovery, On-Page Metadata, Schemas & Security Audit")
@@ -148,7 +155,7 @@ with tab_arch:
         crawl_btn = st.button("🚀 Start Multi-Page Audit", use_container_width=True)
 
     if crawl_btn and target_site:
-        with st.spinner("Discovering sitemap, checking security headers, and auditing pages..."):
+        with st.spinner("Discovering sitemap, checking security headers, Google Safe Browsing and auditing pages..."):
             parsed = urlparse(target_site)
             root = f"{parsed.scheme}://{parsed.netloc}"
             st.session_state["target_domain"] = target_site
@@ -169,7 +176,31 @@ with tab_arch:
                 pass
             st.session_state["sec_headers"] = sec_headers
 
-            # B. Check llms.txt & robots.txt
+            # B. Google Safe Browsing API Check
+            safe_info = {"Status": "Not Checked (Add Key)", "Details": "Key not provided"}
+            if google_cloud_key:
+                try:
+                    sb_url = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={google_cloud_key}"
+                    sb_payload = {
+                        "client": {"clientId": "connext-enterprise-auditor", "clientVersion": "1.0"},
+                        "threatInfo": {
+                            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"],
+                            "platformTypes": ["ANY_PLATFORM"],
+                            "threatEntryTypes": ["URL"],
+                            "threatEntries": [{"url": target_site}]
+                        }
+                    }
+                    sb_res = requests.post(sb_url, json=sb_payload, timeout=8).json()
+                    if "matches" in sb_res and sb_res["matches"]:
+                        threats = [m.get("threatType") for m in sb_res["matches"]]
+                        safe_info = {"Status": "⚠️ Threat Detected", "Details": ", ".join(threats)}
+                    else:
+                        safe_info = {"Status": "✓ Clean (Verified Safe)", "Details": "No threats in Google Safe Browsing index."}
+                except Exception as e:
+                    safe_info = {"Status": "Check Error", "Details": str(e)}
+            st.session_state["safe_browsing"] = safe_info
+
+            # C. Check llms.txt & robots.txt
             try:
                 llms_r = requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5)
                 has_llms = (llms_r.status_code == 200)
@@ -184,7 +215,7 @@ with tab_arch:
                 has_robots = False
             st.session_state["has_robots"] = has_robots
 
-            # C. Discover URLs from sitemaps
+            # D. Discover URLs from sitemaps
             found_urls = set()
             for sm in [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml", f"{root}/sitemap-products.xml"]:
                 try:
@@ -204,7 +235,7 @@ with tab_arch:
 
             url_pool = list(found_urls)[:crawl_limit]
 
-            # D. Comprehensive On-Page Auditor
+            # E. Comprehensive On-Page Auditor
             def audit_page(url):
                 res = {
                     "URL": url,
@@ -290,18 +321,44 @@ with tab_arch:
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
 
+            # F. Topical Categorization via Gemini API (No Google Cloud Billing Needed)
+            if gemini_key and not df_crawl.empty:
+                try:
+                    genai.configure(api_key=gemini_key)
+                    nlp_model = genai.GenerativeModel("gemini-1.5-flash")
+                    sample_text = " ".join(df_crawl["Body_Text"].tolist())[:2500]
+                    nlp_prompt = f"""Analyze this website text and classify it into its top 3-4 standard Google/IAB content taxonomy categories with confidence scores (0-100%).
+Text:
+{sample_text}
+
+Respond strictly in valid JSON format:
+[
+  {{"Category": "/Computers & Electronics/Enterprise Technology/Telecom Solutions", "Confidence": "94%"}}
+]"""
+                    nlp_res = nlp_model.generate_content(nlp_prompt)
+                    clean_nlp = nlp_res.text.strip().replace("```json", "").replace("```", "").strip()
+                    st.session_state["nlp_categories"] = json.loads(clean_nlp)
+                except Exception:
+                    st.session_state["nlp_categories"] = []
+
             st.success(f"✓ Crawled {len(df_crawl)} commercial pages!")
 
     if not st.session_state["df_crawl"].empty:
         df = st.session_state["df_crawl"]
         sec = st.session_state.get("sec_headers", {})
+        sb = st.session_state.get("safe_browsing", {})
         
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Pages Analyzed", len(df))
         m2.metric("Commercial Schemas", f"{(df['Commercial_Schema'].sum()/len(df)*100):.1f}%")
         m3.metric("Mashed H1s", f"{df['Concatenated_H1'].sum()} URLs")
         m4.metric("Security Grade", sec.get("Grade", "N/A"))
-        m5.metric("llms.txt Standard", "✓ Active" if st.session_state.get("has_llms") else "🔴 Missing (404)")
+        m5.metric("Google Safe Browsing", sb.get("Status", "N/A"))
+
+        # NLP Topical Categorization (Gemini Free Classification)
+        if st.session_state.get("nlp_categories"):
+            st.markdown("##### 🧠 Topical Taxonomy Understanding (Gemini AI IAB Classification)")
+            st.dataframe(pd.DataFrame(st.session_state["nlp_categories"]), use_container_width=True)
 
         st.markdown("#### Technical & Metadata Audit Inventory")
         st.dataframe(
@@ -431,17 +488,11 @@ with tab_equity:
             with st.spinner("Harvesting live internal links across content assets..."):
                 df_targets = st.session_state["df_crawl"]
                 commercial_urls = set(df_targets["URL"].dropna().unique())
-                commercial_slugs = {u.strip("/").split("/")[-1]: u for u in commercial_urls if u.strip("/").split("/")[-1]}
-                
                 target_site = st.session_state.get("target_domain", "https://www.csgi.com")
                 parsed_t = urlparse(target_site)
                 root_t = f"{parsed_t.scheme}://{parsed_t.netloc}"
                 
-                articles = []
-                for u in commercial_urls:
-                    if blog_seed_path in u:
-                        articles.append(u)
-                        
+                articles = [u for u in commercial_urls if blog_seed_path in u]
                 if not articles:
                     for sm in [f"{root_t}/sitemap.xml", f"{root_t}/sitemap_index.xml"]:
                         try:
@@ -785,11 +836,11 @@ with tab_ads:
         )
 
 # =============================================================================
-# TAB 7: CORE WEB VITALS LAB (PAGESPEED INSIGHTS)
+# TAB 7: CORE WEB VITALS & CHROME UX REPORT (CRUX) FIELD DATA
 # =============================================================================
 with tab_cwv:
-    st.subheader("Mobile Core Web Vitals Lab Diagnostics")
-    st.write("Runs Google PageSpeed Insights API to evaluate real lab performance, Total Blocking Time (TBT), and thread contention.")
+    st.subheader("Mobile Core Web Vitals Lab Diagnostics & CrUX 28-Day Field Data")
+    st.write("Runs Google PageSpeed Insights (Simulated Lab) and Chrome UX Report (Real User 28-Day Field Vitals).")
 
     col_cwv1, col_cwv2 = st.columns([3, 1])
     with col_cwv1:
@@ -797,15 +848,16 @@ with tab_cwv:
     with col_cwv2:
         st.write("")
         st.write("")
-        run_cwv_btn = st.button("⚡ Run Core Web Vitals Test", use_container_width=True)
+        run_cwv_btn = st.button("⚡ Run Web Vitals & CrUX Test", use_container_width=True)
 
     if run_cwv_btn:
-        if not pagespeed_key:
-            st.error("Google Cloud PageSpeed API Key required.")
+        if not google_cloud_key:
+            st.error("Google Cloud API Key required in sidebar or Streamlit Secrets.")
         else:
-            with st.spinner("Executing Google Lighthouse mobile simulation..."):
+            with st.spinner("Executing Google Lighthouse lab test and CrUX field query..."):
+                # 1. Lab Data (PageSpeed Insights API)
                 try:
-                    ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={cwv_url}&strategy=mobile&key={pagespeed_key}"
+                    ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={cwv_url}&strategy=mobile&key={google_cloud_key}"
                     r_ps = requests.get(ps_url, timeout=30).json()
                     lh = r_ps.get("lighthouseResult", {})
                     audits = lh.get("audits", {})
@@ -819,9 +871,29 @@ with tab_cwv:
                         "Speed_Index": audits.get("speed-index", {}).get("displayValue", "N/A")
                     }
                     st.session_state["cwv_metrics"] = cwv
-                    st.success("✓ Core Web Vitals Test Finished!")
                 except Exception as e:
-                    st.error(f"PageSpeed API Error: {e}")
+                    st.error(f"PageSpeed Lab API Error: {e}")
+
+                # 2. Field Data (Chrome UX Report CrUX API)
+                try:
+                    crux_url = f"https://chromeuxreport.googleapis.com/v1/records:queryRecord?key={google_cloud_key}"
+                    crux_payload = {"origin": f"{urlparse(cwv_url).scheme}://{urlparse(cwv_url).netloc}"}
+                    crux_res = requests.post(crux_url, json=crux_payload, timeout=12).json()
+                    
+                    if "record" in crux_res:
+                        m = crux_res["record"]["metrics"]
+                        st.session_state["crux_metrics"] = {
+                            "Status": "Field Data Available",
+                            "Real_LCP_p75": f"{m.get('largest_contentful_paint', {}).get('percentiles', {}).get('p75', 'N/A')} ms",
+                            "Real_INP_p75": f"{m.get('interaction_to_next_paint', {}).get('percentiles', {}).get('p75', 'N/A')} ms",
+                            "Real_CLS_p75": f"{m.get('cumulative_layout_shift', {}).get('percentiles', {}).get('p75', 'N/A')}"
+                        }
+                    else:
+                        st.session_state["crux_metrics"] = {"Status": "Insufficient Real Chrome Visits Recorded"}
+                except Exception:
+                    st.session_state["crux_metrics"] = {"Status": "CrUX Not Queried or API Not Enabled"}
+
+                st.success("✓ Performance and CrUX Test Complete!")
 
     if st.session_state.get("cwv_metrics"):
         cwv = st.session_state["cwv_metrics"]
@@ -830,19 +902,126 @@ with tab_cwv:
         
         st.markdown(f"""
         <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:16px; margin-bottom:15px;">
-            <div style="font-size:18px; font-weight:bold; color:#004b93; margin-bottom:8px;">Overall Mobile Performance: <span style="color:{score_color}; font-size:24px;">{score_val}/100</span></div>
+            <div style="font-size:18px; font-weight:bold; color:#004b93; margin-bottom:8px;">
+                Lab Mobile Performance Score: <span style="color:{score_color}; font-size:24px;">{score_val}/100</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
-        c_v1, c_v2, c_v3, c_v4, c_v5 = st.columns(5)
-        c_v1.metric("Total Blocking Time (TBT)", cwv.get("TBT", "N/A"), help="Main thread script lockup.")
-        c_v2.metric("Largest Contentful Paint", cwv.get("LCP", "N/A"), help="Render time of largest text/image.")
-        c_v3.metric("Cumulative Layout Shift", cwv.get("CLS", "N/A"), help="Visual layout instability.")
+        c_v1, c_v2, c_v3, c_v4 = st.columns(4)
+        c_v1.metric("Total Blocking Time (TBT)", cwv.get("TBT", "N/A"), help="Main thread script contention.")
+        c_v2.metric("Largest Contentful Paint (LCP)", cwv.get("LCP", "N/A"))
+        c_v3.metric("Cumulative Layout Shift", cwv.get("CLS", "N/A"))
         c_v4.metric("First Contentful Paint", cwv.get("FCP", "N/A"))
-        c_v5.metric("Speed Index", cwv.get("Speed_Index", "N/A"))
+
+        # Display CrUX Field Metrics
+        crux = st.session_state.get("crux_metrics", {})
+        st.markdown("##### 📱 Real Chrome User Experience (CrUX 28-Day Field Data)")
+        if crux.get("Status") == "Field Data Available":
+            cx1, cx2, cx3 = st.columns(3)
+            cx1.metric("Field p75 LCP", crux.get("Real_LCP_p75", "N/A"))
+            cx2.metric("Field p75 INP (Responsiveness)", crux.get("Real_INP_p75", "N/A"))
+            cx3.metric("Field p75 CLS", crux.get("Real_CLS_p75", "N/A"))
+        else:
+            st.info(f"CrUX Status: {crux.get('Status', 'No data')}. (Note: Sites need minimum traffic thresholds for Google to log 28-day Chrome user cohorts).")
 
 # =============================================================================
-# TAB 8: PRODUCTION SCHEMA.ORG JSON-LD GENERATOR
+# TAB 8: AUDIT COMPARISON & PROGRESS TRACKER (NEW FEATURE)
+# =============================================================================
+with tab_compare:
+    st.subheader("Historical Progress Tracking & Audit Delta Comparator")
+    st.write("Upload a previous audit snapshot (.json) to calculate progress deltas (e.g. +30% schema coverage, -20% invisibility), or export current audit as a baseline.")
+
+    col_cmp1, col_cmp2 = st.columns([1, 1])
+
+    # 1. Export Current Snapshot
+    with col_cmp1:
+        st.markdown("#### 1. Save Current Audit as Baseline")
+        df_c = st.session_state.get("df_crawl", pd.DataFrame())
+        df_r = st.session_state.get("df_rankings", pd.DataFrame())
+        df_a = st.session_state.get("df_aeo", pd.DataFrame())
+        df_eq = st.session_state.get("df_equity", pd.DataFrame())
+        df_can = st.session_state.get("df_cannibal", pd.DataFrame())
+        cwv_data = st.session_state.get("cwv_metrics", {})
+        
+        curr_snapshot = {
+            "snapshot_date": datetime.now().strftime("%Y-%m-%d"),
+            "target_domain": st.session_state.get("target_domain", "https://www.csgi.com"),
+            "pages_audited": len(df_c),
+            "commercial_schema_pct": round((df_c["Commercial_Schema"].sum() / len(df_c) * 100), 1) if not df_c.empty else 0.0,
+            "mashed_h1_count": int(df_c["Concatenated_H1"].sum()) if not df_c.empty else 0,
+            "invis_pct": round(((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100), 1) if not df_r.empty else 0.0,
+            "aeo_loss_pct": round(((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100), 1) if not df_a.empty else 0.0,
+            "orphan_pct": round(((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100), 1) if not df_eq.empty else 0.0,
+            "cannibal_pairs_count": len(df_can),
+            "perf_score": cwv_data.get("Score", "N/A"),
+            "tbt": cwv_data.get("TBT", "N/A")
+        }
+
+        st.download_button(
+            label="💾 Download Current Audit Snapshot (.json)",
+            data=json.dumps(curr_snapshot, indent=2),
+            file_name=f"audit_snapshot_{urlparse(curr_snapshot['target_domain']).netloc}_{curr_snapshot['snapshot_date']}.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+    # 2. Upload Previous Snapshot
+    with col_cmp2:
+        st.markdown("#### 2. Upload Previous Audit Snapshot")
+        uploaded_snap = st.file_uploader("Upload Previous Snapshot (.json)", type=["json"])
+        if uploaded_snap is not None:
+            try:
+                prev_data = json.load(uploaded_snap)
+                st.session_state["prev_snapshot"] = prev_data
+                st.success(f"✓ Loaded Previous Baseline from {prev_data.get('snapshot_date', 'Unknown Date')}")
+            except Exception as e:
+                st.error(f"Error parsing snapshot: {e}")
+
+    # 3. Render Delta Scorecard
+    if st.session_state.get("prev_snapshot"):
+        prev = st.session_state["prev_snapshot"]
+        curr = curr_snapshot
+
+        st.markdown("---")
+        st.markdown(f"### 📊 Progress Scorecard: `{prev.get('snapshot_date')}` vs `Today ({curr['snapshot_date']})`")
+
+        diff_rows = []
+
+        def track_metric(name, p_val, c_val, unit="%", higher_is_better=True):
+            try:
+                p_f = float(p_val)
+                c_f = float(c_val)
+                diff = c_f - p_f
+                if higher_is_better:
+                    status = "🟢 Improved" if diff > 0 else ("🔴 Regressed" if diff < 0 else "⚪ Unchanged")
+                else:
+                    status = "🟢 Improved" if diff < 0 else ("🔴 Regressed" if diff > 0 else "⚪ Unchanged")
+                
+                diff_rows.append({
+                    "Pillar / KPI": name,
+                    "Previous Baseline": f"{p_f:.1f}{unit}",
+                    "Current Status": f"{c_f:.1f}{unit}",
+                    "Net Change (Delta)": f"{'+' if diff > 0 else ''}{diff:.1f}{unit}",
+                    "Trajectory": status
+                })
+            except Exception:
+                pass
+
+        track_metric("Commercial Schema Coverage", prev.get("commercial_schema_pct", 0), curr.get("commercial_schema_pct", 0), "%", higher_is_better=True)
+        track_metric("Organic SERP Invisibility Rate", prev.get("invis_pct", 0), curr.get("invis_pct", 0), "%", higher_is_better=False)
+        track_metric("Generative AEO Competitor Win Rate", prev.get("aeo_loss_pct", 0), curr.get("aeo_loss_pct", 0), "%", higher_is_better=False)
+        track_metric("Commercial Page Orphan Rate", prev.get("orphan_pct", 0), curr.get("orphan_pct", 0), "%", higher_is_better=False)
+        track_metric("Concatenated H1 Typography Bugs", prev.get("mashed_h1_count", 0), curr.get("mashed_h1_count", 0), " URLs", higher_is_better=False)
+        track_metric("Cannibalization Conflict Pairs", prev.get("cannibal_pairs_count", 0), curr.get("cannibal_pairs_count", 0), " Pairs", higher_is_better=False)
+        if prev.get("perf_score") != "N/A" and curr.get("perf_score") != "N/A":
+            track_metric("Mobile Web Vitals Score", prev.get("perf_score", 0), curr.get("perf_score", 0), "/100", higher_is_better=True)
+
+        df_comparison = pd.DataFrame(diff_rows)
+        st.dataframe(df_comparison, use_container_width=True)
+
+# =============================================================================
+# TAB 9: PRODUCTION SCHEMA.ORG JSON-LD GENERATOR
 # =============================================================================
 with tab_schema_gen:
     st.subheader("Production Schema.org JSON-LD Generator")
@@ -910,11 +1089,11 @@ with tab_schema_gen:
     st.code(f'<script type="application/ld+json">\n{json_str}\n</script>', language="html")
 
 # =============================================================================
-# TAB 9: CONNEXT BRANDED PDF DELIVERABLE COMPILER
+# TAB 10: CONNEXT BRANDED PDF DELIVERABLE COMPILER
 # =============================================================================
 with tab_report:
     st.subheader("Generate Executive Audit Report (Connext Global Identity)")
-    st.write("Compiles all technical crawl metrics, security scores, cannibalization warnings, SERP rankings, and AEO data into an executive PDF.")
+    st.write("Compiles all technical crawl metrics, security scores, CrUX field data, comparison deltas, SERP rankings, and AEO data into an executive PDF.")
 
     if st.button("📑 Compile & Download Branded Executive PDF", use_container_width=True):
         with st.spinner("Generating publication-grade PDF deliverable..."):
@@ -925,6 +1104,8 @@ with tab_report:
             target_name = st.session_state.get("target_domain", "Target Domain")
             sec_res = st.session_state.get("sec_headers", {})
             cwv_res = st.session_state.get("cwv_metrics", {})
+            sb_res = st.session_state.get("safe_browsing", {})
+            prev = st.session_state.get("prev_snapshot")
 
             total_pages = len(df_c) if not df_c.empty else 0
             comm_schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
@@ -932,6 +1113,7 @@ with tab_report:
             aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 0
             orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty else 0
 
+            # Crawl sample rows
             crawl_rows = ""
             if not df_c.empty:
                 for _, row in df_c.head(15).iterrows():
@@ -941,6 +1123,19 @@ with tab_report:
                         <td>{'⚠️ Concatenated' if row['Concatenated_H1'] else 'Clean'}</td>
                         <td>{'✓ Yes' if row['Commercial_Schema'] else '🔴 None'}</td>
                     </tr>"""
+
+            # Progress block if previous snapshot is active
+            progress_html = ""
+            if prev:
+                progress_html = f"""
+                <div style="background:#f1f5f9; border-left:4px solid #004b93; padding:10px; margin:15px 0;">
+                    <strong style="color:#004b93;">Historical Audit Delta Comparison (vs {prev.get('snapshot_date')}):</strong><br>
+                    • Commercial Schemas: {prev.get('commercial_schema_pct', 0):.1f}% ➔ {comm_schema_pct:.1f}% ({'+' if comm_schema_pct >= prev.get('commercial_schema_pct',0) else ''}{comm_schema_pct - prev.get('commercial_schema_pct',0):.1f}%)<br>
+                    • SERP Invisibility: {prev.get('invis_pct', 0):.1f}% ➔ {invis_pct:.1f}% ({invis_pct - prev.get('invis_pct',0):.1f}%)<br>
+                    • AEO Competitor Wins: {prev.get('aeo_loss_pct', 0):.1f}% ➔ {aeo_loss_pct:.1f}% ({aeo_loss_pct - prev.get('aeo_loss_pct',0):.1f}%)<br>
+                    • Orphaned Hubs: {prev.get('orphan_pct', 0):.1f}% ➔ {orphan_pct:.1f}% ({orphan_pct - prev.get('orphan_pct',0):.1f}%)
+                </div>
+                """
 
             pdf_html = f"""
             <!DOCTYPE html>
@@ -979,7 +1174,9 @@ with tab_report:
                     </div>
                 </div>
 
-                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security Grade:</strong> {sec_res.get('Grade', 'N/A')} | <strong>Mobile Score:</strong> {cwv_res.get('Score', 'N/A')}/100 | <strong>llms.txt:</strong> {'Active' if st.session_state.get('has_llms') else 'Missing (404)'}</p>
+                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security Grade:</strong> {sec_res.get('Grade', 'N/A')} | <strong>Safe Browsing:</strong> {sb_res.get('Status', 'N/A')} | <strong>Mobile Score:</strong> {cwv_res.get('Score', 'N/A')}/100 | <strong>llms.txt:</strong> {'Active' if st.session_state.get('has_llms') else 'Missing (404)'}</p>
+
+                {progress_html}
 
                 <div class="metric-grid">
                     <div class="m-card">
