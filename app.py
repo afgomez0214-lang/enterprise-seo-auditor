@@ -101,7 +101,8 @@ gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 pagespeed_key = st.secrets.get("PAGESPEED_API_KEY", "")
 
 with st.sidebar:
-    st.image(logo_path, width=180) if os.path.exists(logo_path) else None
+    if os.path.exists(logo_path):
+        st.image(logo_path, width=180)
     st.header("⚙️ API Configuration")
     
     # SerpApi
@@ -128,10 +129,14 @@ with st.sidebar:
     st.caption("Powered by multi-threaded asynchronous requests.")
 
 # Initialize Session State
-if "df_crawl" not in st.session_state: st.session_state["df_crawl"] = pd.DataFrame()
-if "df_rankings" not in st.session_state: st.session_state["df_rankings"] = pd.DataFrame()
-if "df_aeo" not in st.session_state: st.session_state["df_aeo"] = pd.DataFrame()
-if "df_ads" not in st.session_state: st.session_state["df_ads"] = pd.DataFrame()
+if "df_crawl" not in st.session_state:
+    st.session_state["df_crawl"] = pd.DataFrame()
+if "df_rankings" not in st.session_state:
+    st.session_state["df_rankings"] = pd.DataFrame()
+if "df_aeo" not in st.session_state:
+    st.session_state["df_aeo"] = pd.DataFrame()
+if "df_ads" not in st.session_state:
+    st.session_state["df_ads"] = pd.DataFrame()
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -179,25 +184,4 @@ with tab_arch:
                 try:
                     r = requests.get(sm, headers=HEADERS, timeout=6)
                     if r.status_code == 200 and ("xml" in r.headers.get("Content-Type", "") or "<urlset" in r.text):
-                        tree = ET.fromstring(r.content)
-                        for elem in tree.iter():
-                            if elem.tag.endswith("loc") and elem.text and not elem.text.endswith(".xml"):
-                                found_urls.add(elem.text.strip())
-                        if len(found_urls) >= crawl_limit: break
-                except Exception:
-                    continue
-
-            if not found_urls:
-                found_urls.add(target_site)
-
-            url_pool = list(found_urls)[:crawl_limit]
-
-            # Audit Single Page Function
-            def audit_page(url):
-                res = {"URL": url, "Status": 0, "H1_Count": 0, "H1_Text": "N/A", "Concatenated_H1": False, "Commercial_Schema": False, "Schema_Types": "None"}
-                try:
-                    r = requests.get(url, headers=HEADERS, timeout=8)
-                    res["Status"] = r.status_code
-                    if r.status_code == 200:
-                        soup = BeautifulSoup(r.text, "html.parser")
-                        h1s = [h.get_text(separator=" ", strip=True)
+                        tree = ET.fromstring
