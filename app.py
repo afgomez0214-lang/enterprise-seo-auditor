@@ -20,66 +20,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# Connext Brand Colors: Deep Blue (#004b93), Orange (#e85122), Gold (#f2a900), Slate (#0f172a)
+# Connext Brand Styling: Deep Blue (#004b93), Orange (#e85122), Gold (#f2a900), Slate (#0f172a)
 st.markdown("""
 <style>
-    .brand-bar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        border-bottom: 3.5px solid #004b93;
-        padding-bottom: 12px;
-        margin-bottom: 20px;
-    }
-    .brand-title {
-        color: #004b93;
-        font-size: 24px;
-        font-weight: 800;
-        margin: 0;
-    }
-    .brand-sub {
-        color: #e85122;
-        font-size: 13px;
-        font-weight: 700;
-        letter-spacing: 0.5px;
-        margin-top: 2px;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 4px 4px 0 0;
-        padding: 8px 16px;
-        font-weight: 600;
-        color: #1e293b;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #004b93 !important;
-        color: white !important;
-    }
-    .stButton>button {
-        background-color: #004b93;
-        color: white;
-        font-weight: bold;
-        border-radius: 4px;
-        border: none;
-    }
-    .stButton>button:hover {
-        background-color: #e85122;
-        color: white;
-    }
-    .metric-box {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-left: 4px solid #004b93;
-        padding: 10px 14px;
-        border-radius: 4px;
-        margin-bottom: 10px;
-    }
+    .brand-title { color: #004b93; font-size: 24px; font-weight: 800; margin: 0; }
+    .brand-sub { color: #e85122; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; margin-top: 2px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 4px 4px 0 0; padding: 8px 16px; font-weight: 600; color: #1e293b; }
+    .stTabs [aria-selected="true"] { background-color: #004b93 !important; color: white !important; }
+    .stButton>button { background-color: #004b93; color: white; font-weight: bold; border-radius: 4px; border: none; }
+    .stButton>button:hover { background-color: #e85122; color: white; }
+    .guide-box { background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #004b93; border-radius: 4px; padding: 14px 18px; margin-bottom: 16px; }
+    .step-pill { background: #004b93; color: white; border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: bold; margin-right: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
-# Header with Logo
+# Header Bar with Logo
 logo_path = "logo.png"
 col_logo, col_text = st.columns([1.5, 6])
 with col_logo:
@@ -105,19 +61,16 @@ with st.sidebar:
         st.image(logo_path, width=180)
     st.header("⚙️ API Configuration")
     
-    # SerpApi
     if serpapi_key:
-        st.success("✓ SerpApi Connected (SERP/AEO/Ads)")
+        st.success("✓ SerpApi Connected")
     else:
         serpapi_key = st.text_input("SerpApi Key (SERP/AEO/Ads)", type="password")
         
-    # Gemini API
     if gemini_key:
         st.success("✓ Gemini AI Connected")
     else:
         gemini_key = st.text_input("Gemini API Key (AI Studio)", type="password")
         
-    # PageSpeed API
     if pagespeed_key:
         st.success("✓ Google PageSpeed Connected")
     else:
@@ -125,23 +78,41 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Crawl Settings")
-    crawl_limit = st.slider("Max Commercial Pages", min_value=5, max_value=80, value=25, step=5)
+    crawl_limit = st.slider("Max Commercial Pages to Crawl", min_value=5, max_value=80, value=25, step=5)
     st.caption("Powered by multi-threaded asynchronous requests.")
 
-# Initialize Session State
-if "df_crawl" not in st.session_state:
-    st.session_state["df_crawl"] = pd.DataFrame()
-if "df_rankings" not in st.session_state:
-    st.session_state["df_rankings"] = pd.DataFrame()
-if "df_aeo" not in st.session_state:
-    st.session_state["df_aeo"] = pd.DataFrame()
-if "df_ads" not in st.session_state:
-    st.session_state["df_ads"] = pd.DataFrame()
+# Initialize Session States
+if "df_crawl" not in st.session_state: st.session_state["df_crawl"] = pd.DataFrame()
+if "df_rankings" not in st.session_state: st.session_state["df_rankings"] = pd.DataFrame()
+if "df_aeo" not in st.session_state: st.session_state["df_aeo"] = pd.DataFrame()
+if "df_ads" not in st.session_state: st.session_state["df_ads"] = pd.DataFrame()
+if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_organic_kws"] = ""
+if "suggested_aeo_prompts" not in st.session_state: st.session_state["suggested_aeo_prompts"] = ""
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 # -----------------------------------------------------------------------------
-# 3. WORKSPACE TABS
+# 3. BUILT-IN OPERATIONAL INSTRUCTIONS EXPANDER
+# -----------------------------------------------------------------------------
+with st.expander("📖 Platform Guide & Free API Setup Instructions (Click to expand)", expanded=False):
+    st.markdown("""
+    ### 🚀 Recommended Audit Workflow
+    1. <span class="step-pill">Step 1</span> **Crawl Architecture (Tab 1):** Enter the target domain (e.g. `https://www.csgi.com`) and click **Start Multi-Page Audit**. The app discovers sitemaps, crawls leaf pages, audits heading hierarchy, and checks for `llms.txt`.
+    2. <span class="step-pill">Step 2</span> **Generate AI Keywords (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts**. Gemini will read the actual products discovered and automatically generate tailored keywords.
+    3. <span class="step-pill">Step 3</span> **Track Organic SERP (Tab 2):** Your generated keywords will pre-populate. Click **Check Live SERP Positions** to query Google Organic Search.
+    4. <span class="step-pill">Step 4</span> **Test Generative Citations (Tab 3):** Click **Test AEO Visibility** to see if Google AI Overviews cite the domain or competitors.
+    5. <span class="step-pill">Step 5</span> **Inspect Competitor Ads (Tab 4):** Enter the domain to retrieve active ad creatives from the Google Ads Transparency Center.
+    6. <span class="step-pill">Step 6</span> **Export Deliverable (Tab 5):** Click **Compile & Download Branded Executive PDF** to produce the report.
+
+    ---
+    ### 🔑 Free API Key Acquisition Links
+    * **SerpApi (100 free searches/month):** Register at [serpapi.com](https://serpapi.com/) → Copy API Key from your Dashboard.
+    * **Google AI Studio (Gemini 1.5/2.5 Flash Free Tier):** Visit [aistudio.google.com](https://aistudio.google.com/) → Click *Get API Key* → *Create API Key in new project*.
+    * **Google PageSpeed API (25,000 free tests/day):** Visit [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → Enable *PageSpeed Insights API* → *Create Credentials* → *API key*.
+    """, unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# 4. WORKSPACE TABS
 # -----------------------------------------------------------------------------
 tab_arch, tab_serp, tab_aeo, tab_ads, tab_report = st.tabs([
     "🌐 1. Architecture & Schemas",
@@ -178,7 +149,7 @@ with tab_arch:
             st.session_state["has_llms"] = has_llms
             st.session_state["target_domain"] = target_site
 
-            # Discover URLs
+            # Discover URLs from sitemaps
             found_urls = set()
             for sm in [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml", f"{root}/sitemap-products.xml"]:
                 try:
@@ -198,7 +169,7 @@ with tab_arch:
 
             url_pool = list(found_urls)[:crawl_limit]
 
-            # Audit Single Page Function
+            # Audit function
             def audit_page(url):
                 res = {
                     "URL": url,
@@ -278,6 +249,78 @@ with tab_arch:
         
         st.dataframe(df, use_container_width=True)
 
+        # ---------------------------------------------------------------------
+        # AI KEYWORD & AEO PROMPT DISCOVERY ENGINE (GEMINI POWERED)
+        # ---------------------------------------------------------------------
+        st.markdown("---")
+        st.subheader("⚡ AI Search Opportunity Discovery")
+        st.write("Use Gemini to analyze the crawled pages and automatically generate targeted keywords for Tab 2 and Tab 3.")
+        
+        if st.button("🤖 Suggest Organic & AEO Keywords from Crawl Data"):
+            with st.spinner("Analyzing crawled product offerings with Gemini..."):
+                organic_list = []
+                aeo_list = []
+                
+                # Try Gemini if key is provided
+                if gemini_key:
+                    try:
+                        genai.configure(api_key=gemini_key)
+                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        
+                        offerings = []
+                        for _, r in df.iterrows():
+                            h1_val = str(r.get("H1_Text", "")).strip()
+                            url_val = str(r.get("URL", "")).strip()
+                            if h1_val and h1_val != "N/A":
+                                offerings.append(f"- URL: {url_val} | Title: {h1_val}")
+                        
+                        context_str = "\n".join(offerings[:20])
+                        prompt = f"""You are a senior enterprise SEO/AEO strategist.
+Analyze these crawled products and solutions for {st.session_state.get('target_domain', 'the site')}:
+{context_str}
+
+Generate two distinct search lists:
+1. "organic": Exactly 8 high-intent commercial B2B Google search queries enterprise buyers use to find these services.
+2. "aeo": Exactly 8 comparative, consultative questions that tech leaders ask Generative AI engines (ChatGPT, Google AI Overviews, Perplexity) when shortlisting software vendors in these categories.
+
+Respond strictly in valid JSON format:
+{{"organic": ["kw1", "kw2", ...], "aeo": ["prompt1", "prompt2", ...]}}"""
+
+                        ai_res = model.generate_content(prompt)
+                        clean_json = ai_res.text.strip().replace("```json", "").replace("```", "").strip()
+                        parsed_ai = json.loads(clean_json)
+                        organic_list = parsed_ai.get("organic", [])
+                        aeo_list = parsed_ai.get("aeo", [])
+                    except Exception as e:
+                        st.warning(f"Gemini generation notice: {e}. Using intelligent fallback.")
+
+                # Fallback generator if no key or error
+                if not organic_list:
+                    for _, r in df.iterrows():
+                        h1_val = str(r.get("H1_Text", "")).strip()
+                        slug_val = str(r.get("URL", "")).strip("/").split("/")[-1].replace("-", " ")
+                        if h1_val and h1_val != "N/A" and len(h1_val) > 4:
+                            clean_t = re.sub(r'[^a-zA-Z0-9 ]', '', h1_val).lower()
+                            organic_list.append(f"{clean_t} enterprise software")
+                            aeo_list.append(f"what are the top platforms for {clean_t}")
+                        elif slug_val and len(slug_val) > 3:
+                            organic_list.append(f"{slug_val} solutions")
+                            aeo_list.append(f"leading providers for {slug_val}")
+                    organic_list = list(dict.fromkeys(organic_list))[:8]
+                    aeo_list = list(dict.fromkeys(aeo_list))[:8]
+
+                st.session_state["suggested_organic_kws"] = "\n".join(organic_list)
+                st.session_state["suggested_aeo_prompts"] = "\n".join(aeo_list)
+
+                st.success("✓ Keywords & AEO Prompts Generated and applied to Tab 2 and Tab 3!")
+                c_out1, c_out2 = st.columns(2)
+                with c_out1:
+                    st.write("**Suggested Organic Commercial Keywords:**")
+                    st.code(st.session_state["suggested_organic_kws"], language="text")
+                with c_out2:
+                    st.write("**Suggested Generative AEO Prompts:**")
+                    st.code(st.session_state["suggested_aeo_prompts"], language="text")
+
 # =============================================================================
 # TAB 2: ORGANIC KEYWORD SERP TRACKER
 # =============================================================================
@@ -287,8 +330,13 @@ with tab_serp:
     
     col_kws, col_action = st.columns([3, 1])
     with col_kws:
-        default_kws = "telecom billing software\ntelecom CPQ software\nconvergent billing platform\ncustomer journey orchestration\nembedded b2b payments platform\nhealthcare patient billing software"
-        kw_input = st.text_area("Target Enterprise Keywords (One per line)", value=default_kws, height=130)
+        default_kws = st.session_state.get(
+            "suggested_organic_kws",
+            "telecom billing software\ntelecom CPQ software\nconvergent billing platform\ncustomer journey orchestration\nembedded b2b payments platform\nhealthcare patient billing software"
+        )
+        if not default_kws:
+            default_kws = "telecom billing software\ntelecom CPQ software\nconvergent billing platform\ncustomer journey orchestration"
+        kw_input = st.text_area("Target Enterprise Keywords (One per line)", value=default_kws, height=140)
     with col_action:
         st.write("")
         st.write("")
@@ -358,8 +406,13 @@ with tab_aeo:
 
     col_aeo_in, col_aeo_btn = st.columns([3, 1])
     with col_aeo_in:
-        default_aeo = "best telecom billing software enterprise\nleading convergent billing platforms\nbest customer journey orchestration tools\ntop telecom CPQ software providers"
-        aeo_input = st.text_area("Generative Evaluation Prompts", value=default_aeo, height=110)
+        default_aeo = st.session_state.get(
+            "suggested_aeo_prompts",
+            "best telecom billing software enterprise\nleading convergent billing platforms\nbest customer journey orchestration tools\ntop telecom CPQ software providers"
+        )
+        if not default_aeo:
+            default_aeo = "best telecom billing software enterprise\nleading convergent billing platforms"
+        aeo_input = st.text_area("Generative Evaluation Prompts", value=default_aeo, height=130)
     with col_aeo_btn:
         st.write("")
         st.write("")
@@ -490,7 +543,6 @@ with tab_report:
             invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 0
             aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 0
 
-            # Table rows for crawl
             crawl_rows = ""
             if not df_c.empty:
                 for _, row in df_c.head(15).iterrows():
