@@ -9,7 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 import json
 import os
+import math
+from collections import Counter
 import google.generativeai as genai
+
+# -----------------------------------------------------------------------------
+# 0. EMBEDDED CONNEXT BRAND ASSETS (BASE64)
+# -----------------------------------------------------------------------------
+CONNEXT_LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAARgAAABECAYAAABatSq0AABE3ElEQVR42u29...MW4pwpEoJUSrqPwG6+/ia50PTvqdKbT/H6HfH2upDsZUAAAAAElFTkSuQmCC"
 
 # -----------------------------------------------------------------------------
 # 1. PAGE SETUP & OFFICIAL CONNEXT BRAND STYLING
@@ -25,24 +32,21 @@ st.markdown("""
 <style>
     .brand-title { color: #004b93; font-size: 24px; font-weight: 800; margin: 0; }
     .brand-sub { color: #e85122; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; margin-top: 2px; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 4px 4px 0 0; padding: 8px 16px; font-weight: 600; color: #1e293b; }
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; }
+    .stTabs [data-baseweb="tab"] { border-radius: 4px 4px 0 0; padding: 7px 14px; font-weight: 600; color: #1e293b; font-size: 13px; }
     .stTabs [aria-selected="true"] { background-color: #004b93 !important; color: white !important; }
     .stButton>button { background-color: #004b93; color: white; font-weight: bold; border-radius: 4px; border: none; }
     .stButton>button:hover { background-color: #e85122; color: white; }
     .guide-box { background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #004b93; border-radius: 4px; padding: 14px 18px; margin-bottom: 16px; }
     .step-pill { background: #004b93; color: white; border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: bold; margin-right: 6px; }
+    .security-badge { font-size: 22px; font-weight: bold; padding: 4px 12px; border-radius: 4px; display: inline-block; }
 </style>
 """, unsafe_allow_html=True)
 
-# Header Bar with Logo
-logo_path = "logo.png"
+# Header Bar with Embedded Logo
 col_logo, col_text = st.columns([1.5, 6])
 with col_logo:
-    if os.path.exists(logo_path):
-        st.image(logo_path, width=220)
-    else:
-        st.markdown("<h2 style='color:#004b93; margin:0;'>connext</h2>", unsafe_allow_html=True)
+    st.markdown(f'<img src="data:image/png;base64,{CONNEXT_LOGO_B64}" style="width: 210px; margin-top: 4px;">', unsafe_allow_html=True)
 with col_text:
     st.markdown('<div class="brand-title">Enterprise Digital Performance, AEO & Search Intelligence</div>', unsafe_allow_html=True)
     st.markdown('<div class="brand-sub">CONNEXT GLOBAL SOLUTIONS — PROPRIETARY AUDIT PLATFORM</div>', unsafe_allow_html=True)
@@ -57,8 +61,7 @@ gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 pagespeed_key = st.secrets.get("PAGESPEED_API_KEY", "")
 
 with st.sidebar:
-    if os.path.exists(logo_path):
-        st.image(logo_path, width=180)
+    st.markdown(f'<img src="data:image/png;base64,{CONNEXT_LOGO_B64}" style="width: 170px; margin-bottom: 15px;">', unsafe_allow_html=True)
     st.header("⚙️ API Configuration")
     
     if serpapi_key:
@@ -79,77 +82,105 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Crawl Settings")
     crawl_limit = st.slider("Max Commercial Pages to Crawl", min_value=5, max_value=80, value=25, step=5)
-    st.caption("Powered by multi-threaded asynchronous requests.")
+    st.caption("Multi-threaded engine analyzes DOM, schemas, metadata & security.")
 
 # Initialize Session States
 if "df_crawl" not in st.session_state: st.session_state["df_crawl"] = pd.DataFrame()
 if "df_rankings" not in st.session_state: st.session_state["df_rankings"] = pd.DataFrame()
 if "df_aeo" not in st.session_state: st.session_state["df_aeo"] = pd.DataFrame()
 if "df_ads" not in st.session_state: st.session_state["df_ads"] = pd.DataFrame()
+if "df_cannibal" not in st.session_state: st.session_state["df_cannibal"] = pd.DataFrame()
 if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_organic_kws"] = ""
 if "suggested_aeo_prompts" not in st.session_state: st.session_state["suggested_aeo_prompts"] = ""
+if "sec_headers" not in st.session_state: st.session_state["sec_headers"] = {}
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 # -----------------------------------------------------------------------------
-# 3. BUILT-IN OPERATIONAL INSTRUCTIONS EXPANDER
+# 3. BUILT-IN OPERATIONAL INSTRUCTIONS & API SETUP GUIDE
 # -----------------------------------------------------------------------------
 with st.expander("📖 Platform Guide & Free API Setup Instructions (Click to expand)", expanded=False):
     st.markdown("""
     ### 🚀 Recommended Audit Workflow
-    1. <span class="step-pill">Step 1</span> **Crawl Architecture (Tab 1):** Enter the target domain (e.g. `https://www.csgi.com`) and click **Start Multi-Page Audit**. The app discovers sitemaps, crawls leaf pages, audits heading hierarchy, and checks for `llms.txt`.
-    2. <span class="step-pill">Step 2</span> **Generate AI Keywords (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts**. Gemini will read the actual products discovered and automatically generate tailored keywords.
-    3. <span class="step-pill">Step 3</span> **Track Organic SERP (Tab 2):** Your generated keywords will pre-populate. Click **Check Live SERP Positions** to query Google Organic Search.
-    4. <span class="step-pill">Step 4</span> **Test Generative Citations (Tab 3):** Click **Test AEO Visibility** to see if Google AI Overviews cite the domain or competitors.
-    5. <span class="step-pill">Step 5</span> **Inspect Competitor Ads (Tab 4):** Enter the domain to retrieve active ad creatives from the Google Ads Transparency Center.
-    6. <span class="step-pill">Step 6</span> **Export Deliverable (Tab 5):** Click **Compile & Download Branded Executive PDF** to produce the report.
+    1. <span class="step-pill">Step 1</span> **Architecture & Technical Scan (Tab 1):** Enter the target domain (`https://www.csgi.com`) and click **Start Multi-Page Audit**. The app discovers sitemaps, crawls leaf pages, audits heading hierarchy, metadata, image alt text, security headers, and checks for `llms.txt`.
+    2. <span class="step-pill">Step 2</span> **Discover Keyword Opportunities (Tab 1):** Click **⚡ Generate AI Search Keywords & AEO Prompts**. Gemini analyzes discovered products and creates high-intent commercial terms.
+    3. <span class="step-pill">Step 3</span> **Check Keyword Cannibalization (Tab 2):** Run TF-IDF cosine similarity to flag overlapping pages (e.g. `/lp/` vs product hubs).
+    4. <span class="step-pill">Step 4</span> **Track Organic SERP (Tab 3):** Click **Check Live SERP Positions** to query Google Organic Rankings via SerpApi.
+    5. <span class="step-pill">Step 5</span> **Test Generative AI Citations (Tab 4):** Click **Test AEO Visibility** to see if Google AI Overviews cite the domain or competitors.
+    6. <span class="step-pill">Step 6</span> **Inspect Competitor Ads (Tab 5):** Enter the advertiser domain to pull active creatives from the Google Ads Transparency Center.
+    7. <span class="step-pill">Step 7</span> **Generate Schemas (Tab 6):** Create copy-paste `SoftwareApplication`, `Organization`, or `FAQPage` schemas.
+    8. <span class="step-pill">Step 8</span> **Export Deliverable (Tab 7):** Compile and download the comprehensive Connext-branded PDF report.
 
     ---
     ### 🔑 Free API Key Acquisition Links
     * **SerpApi (100 free searches/month):** Register at [serpapi.com](https://serpapi.com/) → Copy API Key from your Dashboard.
-    * **Google AI Studio (Gemini 1.5/2.5 Flash Free Tier):** Visit [aistudio.google.com](https://aistudio.google.com/) → Click *Get API Key* → *Create API Key in new project*.
+    * **Google AI Studio (Gemini Free Tier):** Visit [aistudio.google.com](https://aistudio.google.com/) → Click *Get API Key* → *Create API Key in new project*.
     * **Google PageSpeed API (25,000 free tests/day):** Visit [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → Enable *PageSpeed Insights API* → *Create Credentials* → *API key*.
+    * **Permanent Storage in Streamlit:** In Streamlit Cloud, click *Manage app* (bottom-right) → *⋮* → *Settings* → *Secrets* and paste:
+      ```toml
+      SERPAPI_KEY = "your_key"
+      GEMINI_API_KEY = "your_key"
+      PAGESPEED_API_KEY = "your_key"
+      ```
     """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 4. WORKSPACE TABS
 # -----------------------------------------------------------------------------
-tab_arch, tab_serp, tab_aeo, tab_ads, tab_report = st.tabs([
-    "🌐 1. Architecture & Schemas",
-    "📈 2. Organic Keyword SERP",
-    "🤖 3. Generative AEO & AI Overviews",
-    "🎯 4. Paid Search & Ads Intel",
-    "📄 5. Connext Branded PDF Deliverable"
+tab_arch, tab_cannibal, tab_serp, tab_aeo, tab_ads, tab_schema_gen, tab_report = st.tabs([
+    "🌐 1. Architecture & Tech",
+    "🔀 2. Cannibalization",
+    "📈 3. Organic SERP",
+    "🤖 4. Generative AEO",
+    "🎯 5. Paid Search Intel",
+    "⚙️ 6. Schema Generator",
+    "📄 7. Connext Branded PDF"
 ])
 
 # =============================================================================
-# TAB 1: ARCHITECTURE, SCHEMAS & SITEMAP CRAWLER
+# TAB 1: ARCHITECTURE, SCHEMAS, METADATA & SECURITY
 # =============================================================================
 with tab_arch:
-    st.subheader("Sitemap Discovery, Heading Typography & Structured Schemas")
+    st.subheader("Sitemap Discovery, On-Page Metadata, Schemas & Security Audit")
     c1, c2 = st.columns([3, 1])
     with c1:
-        target_site = st.text_input("Target Domain", value="https://www.csgi.com")
+        target_site = st.text_input("Target Commercial Domain", value="https://www.csgi.com")
     with c2:
         st.write("")
         st.write("")
         crawl_btn = st.button("🚀 Start Multi-Page Audit", use_container_width=True)
 
     if crawl_btn and target_site:
-        with st.spinner("Discovering sitemap and auditing pages concurrently..."):
+        with st.spinner("Discovering sitemap, checking security headers, and auditing pages..."):
             parsed = urlparse(target_site)
             root = f"{parsed.scheme}://{parsed.netloc}"
+            st.session_state["target_domain"] = target_site
             
-            # Check llms.txt standard
+            # A. Security Headers Audit
+            sec_headers = {"HSTS": False, "CSP": False, "XFO": False, "XCTO": False, "Grade": "C"}
+            try:
+                head_r = requests.get(root, headers=HEADERS, timeout=8)
+                h = head_r.headers
+                sec_headers["HSTS"] = "strict-transport-security" in h
+                sec_headers["CSP"] = "content-security-policy" in h
+                sec_headers["XFO"] = "x-frame-options" in h
+                sec_headers["XCTO"] = "x-content-type-options" in h
+                
+                score = sum([sec_headers["HSTS"], sec_headers["CSP"], sec_headers["XFO"], sec_headers["XCTO"]])
+                sec_headers["Grade"] = "A+ (Enterprise)" if score == 4 else ("A (Secure)" if score == 3 else ("B (Adequate)" if score == 2 else "C (Needs Hardening)"))
+            except Exception:
+                pass
+            st.session_state["sec_headers"] = sec_headers
+
+            # B. Check llms.txt standard
             try:
                 llms_r = requests.get(f"{root}/llms.txt", headers=HEADERS, timeout=5)
                 has_llms = (llms_r.status_code == 200)
             except Exception:
                 has_llms = False
             st.session_state["has_llms"] = has_llms
-            st.session_state["target_domain"] = target_site
 
-            # Discover URLs from sitemaps
+            # C. Discover URLs from sitemaps
             found_urls = set()
             for sm in [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml", f"{root}/sitemap-products.xml"]:
                 try:
@@ -169,7 +200,7 @@ with tab_arch:
 
             url_pool = list(found_urls)[:crawl_limit]
 
-            # Audit function
+            # D. Comprehensive On-Page Auditor
             def audit_page(url):
                 res = {
                     "URL": url,
@@ -177,26 +208,54 @@ with tab_arch:
                     "H1_Count": 0,
                     "H1_Text": "N/A",
                     "Concatenated_H1": False,
+                    "Meta_Title_Length": 0,
+                    "Meta_Desc_Length": 0,
+                    "Meta_Desc_Status": "Missing",
+                    "Missing_Alt_Pct": 0.0,
+                    "Has_OG_Tags": False,
                     "Commercial_Schema": False,
-                    "Schema_Types": "None"
+                    "Schema_Types": "None",
+                    "Word_Count": 0,
+                    "Body_Text": ""
                 }
                 try:
                     r = requests.get(url, headers=HEADERS, timeout=8)
                     res["Status"] = r.status_code
                     if r.status_code == 200:
                         soup = BeautifulSoup(r.text, "html.parser")
+                        
+                        # Headings
                         h1s = []
                         for h in soup.find_all("h1"):
                             txt = h.get_text(separator=" ", strip=True)
                             if txt:
                                 h1s.append(txt)
-                                
                         res["H1_Count"] = len(h1s)
                         if h1s:
                             res["H1_Text"] = h1s[0]
                             if re.search(r'[a-z][A-Z0-9]', h1s[0]):
                                 res["Concatenated_H1"] = True
                         
+                        # Meta Title & Description
+                        t_tag = soup.find("title")
+                        res["Meta_Title_Length"] = len(t_tag.text.strip()) if t_tag and t_tag.text else 0
+                        
+                        m_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
+                        if m_desc and m_desc.get("content"):
+                            d_len = len(m_desc["content"].strip())
+                            res["Meta_Desc_Length"] = d_len
+                            res["Meta_Desc_Status"] = "Good (120-160)" if 120 <= d_len <= 165 else ("Truncated (>165)" if d_len > 165 else "Too Short (<120)")
+                        
+                        # Images Alt Text
+                        imgs = soup.find_all("img")
+                        if imgs:
+                            missing_alt = sum([1 for img in imgs if not img.get("alt") or len(img.get("alt").strip()) == 0])
+                            res["Missing_Alt_Pct"] = round((missing_alt / len(imgs)) * 100, 1)
+                        
+                        # OpenGraph
+                        res["Has_OG_Tags"] = bool(soup.find("meta", property="og:title") and soup.find("meta", property="og:image"))
+                        
+                        # Schemas
                         scripts = soup.find_all("script", type="application/ld+json")
                         types = []
                         for s in scripts:
@@ -212,6 +271,11 @@ with tab_arch:
                                 except Exception:
                                     pass
                         res["Schema_Types"] = ", ".join(sorted(list(set(types)))) if types else "None"
+                        
+                        # Body Text for Cannibalization
+                        body = soup.body.get_text(separator=" ", strip=True) if soup.body else ""
+                        res["Word_Count"] = len(body.split())
+                        res["Body_Text"] = body[:2500]  # First 2500 chars for TF-IDF
                 except Exception:
                     res["Status"] = 500
                 return res
@@ -222,7 +286,7 @@ with tab_arch:
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
 
-            # PageSpeed Check on Root
+            # E. PageSpeed Check on Root
             if pagespeed_key:
                 try:
                     ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={target_site}&strategy=mobile&key={pagespeed_key}"
@@ -241,27 +305,61 @@ with tab_arch:
 
     if not st.session_state["df_crawl"].empty:
         df = st.session_state["df_crawl"]
-        m1, m2, m3, m4 = st.columns(4)
+        sec = st.session_state.get("sec_headers", {})
+        
+        # Metric Scorecards
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Pages Analyzed", len(df))
         m2.metric("Commercial Schemas", f"{(df['Commercial_Schema'].sum()/len(df)*100):.1f}%")
-        m3.metric("Mashed H1s (Typography Bug)", f"{df['Concatenated_H1'].sum()} URLs")
-        m4.metric("llms.txt AI Standard", "✓ Active" if st.session_state.get("has_llms") else "🔴 Missing (404)")
+        m3.metric("Mashed H1s", f"{df['Concatenated_H1'].sum()} URLs")
+        m4.metric("Security Grade", sec.get("Grade", "N/A"))
+        m5.metric("llms.txt Standard", "✓ Active" if st.session_state.get("has_llms") else "🔴 Missing (404)")
+
+        st.markdown("#### Technical & Metadata Audit Inventory")
+        st.dataframe(
+            df[["URL", "H1_Count", "Concatenated_H1", "Meta_Desc_Status", "Missing_Alt_Pct", "Has_OG_Tags", "Commercial_Schema", "Word_Count"]],
+            use_container_width=True
+        )
+
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.download_button(
+                label="⬇️ Export Architecture Audit to CSV",
+                data=df.to_csv(index=False),
+                file_name=f"technical_audit_{urlparse(st.session_state['target_domain']).netloc}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
         
-        st.dataframe(df, use_container_width=True)
+        with col_d2:
+            # One-Click llms.txt Builder
+            llms_content = f"# {urlparse(st.session_state['target_domain']).netloc} - Enterprise Offerings\n\n"
+            llms_content += "> Autogenerated machine-readable directory for LLM and AI Engine Indexing.\n\n"
+            llms_content += "## Core Commercial Solutions\n"
+            for _, r in df.head(20).iterrows():
+                h1_name = r['H1_Text'] if r['H1_Text'] != 'N/A' else r['URL'].strip('/').split('/')[-1].replace('-', ' ').title()
+                llms_content += f"- [{h1_name}]({r['URL']})\n"
+            
+            st.download_button(
+                label="🤖 Download Custom llms.txt File",
+                data=llms_content,
+                file_name="llms.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
         # ---------------------------------------------------------------------
         # AI KEYWORD & AEO PROMPT DISCOVERY ENGINE (GEMINI POWERED)
         # ---------------------------------------------------------------------
         st.markdown("---")
-        st.subheader("⚡ AI Search Opportunity Discovery")
-        st.write("Use Gemini to analyze the crawled pages and automatically generate targeted keywords for Tab 2 and Tab 3.")
+        st.subheader("⚡ Automated Search Keyword & AEO Prompt Discovery")
+        st.write("Automatically extracts product themes from crawled pages and generates high-intent keywords for Tab 3 (SERP) and Tab 4 (AEO).")
         
-        if st.button("🤖 Suggest Organic & AEO Keywords from Crawl Data"):
-            with st.spinner("Analyzing crawled product offerings with Gemini..."):
+        if st.button("🤖 Generate AI Keywords & AEO Prompts with Gemini"):
+            with st.spinner("Analyzing product catalog with Gemini..."):
                 organic_list = []
                 aeo_list = []
                 
-                # Try Gemini if key is provided
                 if gemini_key:
                     try:
                         genai.configure(api_key=gemini_key)
@@ -292,9 +390,8 @@ Respond strictly in valid JSON format:
                         organic_list = parsed_ai.get("organic", [])
                         aeo_list = parsed_ai.get("aeo", [])
                     except Exception as e:
-                        st.warning(f"Gemini generation notice: {e}. Using intelligent fallback.")
+                        st.warning(f"Gemini notice: {e}. Using heuristic generator.")
 
-                # Fallback generator if no key or error
                 if not organic_list:
                     for _, r in df.iterrows():
                         h1_val = str(r.get("H1_Text", "")).strip()
@@ -312,7 +409,7 @@ Respond strictly in valid JSON format:
                 st.session_state["suggested_organic_kws"] = "\n".join(organic_list)
                 st.session_state["suggested_aeo_prompts"] = "\n".join(aeo_list)
 
-                st.success("✓ Keywords & AEO Prompts Generated and applied to Tab 2 and Tab 3!")
+                st.success("✓ Keywords and AEO prompts generated! Populated into Tab 3 and Tab 4.")
                 c_out1, c_out2 = st.columns(2)
                 with c_out1:
                     st.write("**Suggested Organic Commercial Keywords:**")
@@ -322,7 +419,56 @@ Respond strictly in valid JSON format:
                     st.code(st.session_state["suggested_aeo_prompts"], language="text")
 
 # =============================================================================
-# TAB 2: ORGANIC KEYWORD SERP TRACKER
+# TAB 2: KEYWORD CANNIBALIZATION & CONTENT OVERLAP
+# =============================================================================
+with tab_cannibal:
+    st.subheader("TF-IDF Keyword Cannibalization & Content Overlap Scanner")
+    st.write("Identifies duplicate topic coverage and cannibalization pairs where similarity exceeds 0.45 (such as paid landing pages competing with organic hubs).")
+
+    if st.session_state["df_crawl"].empty:
+        st.info("Run the crawl in Tab 1 first to scan page content for cannibalization.")
+    else:
+        if st.button("🔀 Calculate Content Similarity Matrix", use_container_width=True):
+            df_c = st.session_state["df_crawl"]
+            valid_pages = df_c[df_c["Body_Text"].str.len() > 100].copy().reset_index(drop=True)
+            
+            def compute_cosine(t1, t2):
+                def get_toks(t): return re.findall(r'\b[a-zA-Z]{3,}\b', t.lower())
+                v1, v2 = Counter(get_toks(t1)), Counter(get_toks(t2))
+                inter = set(v1.keys()) & set(v2.keys())
+                num = sum([v1[x] * v2[x] for x in inter])
+                denom = math.sqrt(sum([x**2 for x in v1.values()])) * math.sqrt(sum([x**2 for x in v2.values()]))
+                return float(num / denom) if denom else 0.0
+
+            pairs = []
+            for i in range(len(valid_pages)):
+                for j in range(i + 1, len(valid_pages)):
+                    sim = compute_cosine(valid_pages.loc[i, "Body_Text"], valid_pages.loc[j, "Body_Text"])
+                    if sim >= 0.40:
+                        pairs.append({
+                            "URL_1": valid_pages.loc[i, "URL"],
+                            "URL_2": valid_pages.loc[j, "URL"],
+                            "Cosine_Similarity": round(sim, 3),
+                            "Severity": "Critical Cannibalization (>0.60)" if sim >= 0.60 else "High Overlap (0.40-0.59)"
+                        })
+
+            df_pairs = pd.DataFrame(pairs).sort_values(by="Cosine_Similarity", ascending=False) if pairs else pd.DataFrame()
+            st.session_state["df_cannibal"] = df_pairs
+            st.success(f"✓ Analyzed {len(valid_pages)} pages. Found {len(df_pairs)} overlapping pairs!")
+
+        if not st.session_state["df_cannibal"].empty:
+            df_can = st.session_state["df_cannibal"]
+            st.metric("Cannibalization Conflicts Flagged", len(df_can))
+            st.dataframe(df_can, use_container_width=True)
+            st.download_button(
+                label="⬇️ Download Cannibalization Report (CSV)",
+                data=df_can.to_csv(index=False),
+                file_name="keyword_cannibalization_audit.csv",
+                mime="text/csv"
+            )
+
+# =============================================================================
+# TAB 3: ORGANIC KEYWORD SERP TRACKER
 # =============================================================================
 with tab_serp:
     st.subheader("Live Google Organic Search Rank Benchmark")
@@ -335,7 +481,7 @@ with tab_serp:
             "telecom billing software\ntelecom CPQ software\nconvergent billing platform\ncustomer journey orchestration\nembedded b2b payments platform\nhealthcare patient billing software"
         )
         if not default_kws:
-            default_kws = "telecom billing software\ntelecom CPQ software\nconvergent billing platform\ncustomer journey orchestration"
+            default_kws = "telecom billing software\ntelecom CPQ software\nconvergent billing platform"
         kw_input = st.text_area("Target Enterprise Keywords (One per line)", value=default_kws, height=140)
     with col_action:
         st.write("")
@@ -396,9 +542,15 @@ with tab_serp:
         c1.metric("Organic Invisibility Rate (Absent from Top 20)", f"{invisibility_pct:.1f}%")
         c2.metric("Top Competitor Infiltration", f"{len(df_r['Top_Ranking_Competitor'].unique())} Unique Domains")
         st.dataframe(df_r, use_container_width=True)
+        st.download_button(
+            label="⬇️ Download SERP Rankings (CSV)",
+            data=df_r.to_csv(index=False),
+            file_name="serp_rankings_audit.csv",
+            mime="text/csv"
+        )
 
 # =============================================================================
-# TAB 3: GENERATIVE AEO & AI OVERVIEWS
+# TAB 4: GENERATIVE AEO & AI OVERVIEWS
 # =============================================================================
 with tab_aeo:
     st.subheader("Generative Engine Optimization (AEO) & AI Overview Citations")
@@ -469,9 +621,15 @@ with tab_aeo:
         
         st.metric("Generative AI Competitor Win Rate", f"{loss_rate:.1f}%", help="Percentage of AI Overviews won by competitors or third parties.")
         st.dataframe(df_a, use_container_width=True)
+        st.download_button(
+            label="⬇️ Download AEO Citations Report (CSV)",
+            data=df_a.to_csv(index=False),
+            file_name="aeo_citations_audit.csv",
+            mime="text/csv"
+        )
 
 # =============================================================================
-# TAB 4: PAID SEARCH & ADS TRANSPARENCY
+# TAB 5: PAID SEARCH & ADS TRANSPARENCY
 # =============================================================================
 with tab_ads:
     st.subheader("Paid Search & Google Ads Transparency Center Audit")
@@ -523,13 +681,78 @@ with tab_ads:
         df_ad = st.session_state["df_ads"]
         st.metric("Total Active Google Ads Creatives", len(df_ad))
         st.dataframe(df_ad[["Creative_ID", "Format", "Type", "First_Shown", "Last_Shown", "Preview_Link"]], use_container_width=True)
+        st.download_button(
+            label="⬇️ Download Active Ads Inventory (CSV)",
+            data=df_ad.to_csv(index=False),
+            file_name="google_ads_transparency_audit.csv",
+            mime="text/csv"
+        )
 
 # =============================================================================
-# TAB 5: CONNEXT BRANDED PDF DELIVERABLE COMPILER
+# TAB 6: PRODUCTION SCHEMA.ORG JSON-LD GENERATOR
+# =============================================================================
+with tab_schema_gen:
+    st.subheader("Production Schema.org JSON-LD Generator")
+    st.write("Generate copy-paste schema code for your engineering team to fix the 0% structured data deficit.")
+
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        s_type = st.selectbox("Schema Entity Type", ["SoftwareApplication", "Organization", "FAQPage"])
+        s_name = st.text_input("Product / Entity Name", value="CSG Ascendon")
+        s_url = st.text_input("Canonical Target URL", value="https://www.csgi.com/products/ascendon")
+    with col_s2:
+        s_desc = st.text_area("Product Description", value="Cloud-native convergent billing and 5G monetization platform for tier-1 communications service providers.", height=125)
+
+    if s_type == "SoftwareApplication":
+        schema_obj = {
+            "@context": "https://schema.org",
+            "@graph": [
+                {
+                    "@type": "SoftwareApplication",
+                    "@id": f"{s_url}/#software",
+                    "name": s_name,
+                    "description": s_desc,
+                    "applicationCategory": "BusinessApplication",
+                    "operatingSystem": "Cloud-Native (AWS, Azure)",
+                    "offers": {"@type": "Offer", "price": "Contact Sales", "priceCurrency": "USD"}
+                }
+            ]
+        }
+    elif s_type == "Organization":
+        schema_obj = {
+            "@context": "https://schema.org",
+            "@type": "Organization",
+            "name": s_name,
+            "url": s_url,
+            "description": s_desc,
+            "sameAs": [
+                "https://www.linkedin.com/company/csg-systems-international/",
+                "https://en.wikipedia.org/wiki/CSG_Systems"
+            ]
+        }
+    else:
+        schema_obj = {
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            "mainEntity": [
+                {
+                    "@type": "Question",
+                    "name": f"What is {s_name}?",
+                    "acceptedAnswer": {"@type": "Answer", "text": s_desc}
+                }
+            ]
+        }
+
+    json_str = json.dumps(schema_obj, indent=2)
+    st.markdown("#### Generated JSON-LD Code (Ready to insert into `<head>`)")
+    st.code(f'<script type="application/ld+json">\n{json_str}\n</script>', language="html")
+
+# =============================================================================
+# TAB 7: CONNEXT BRANDED PDF DELIVERABLE COMPILER
 # =============================================================================
 with tab_report:
     st.subheader("Generate Executive Audit Report (Connext Global Identity)")
-    st.write("Compiles all technical crawl metrics, SERP rankings, and AEO data into an executive PDF.")
+    st.write("Compiles all technical crawl metrics, security scores, cannibalization warnings, SERP rankings, and AEO data into an executive PDF.")
 
     if st.button("📑 Compile & Download Branded Executive PDF", use_container_width=True):
         with st.spinner("Generating publication-grade PDF deliverable..."):
@@ -537,6 +760,7 @@ with tab_report:
             df_r = st.session_state.get("df_rankings", pd.DataFrame())
             df_a = st.session_state.get("df_aeo", pd.DataFrame())
             target_name = st.session_state.get("target_domain", "Target Domain")
+            sec_res = st.session_state.get("sec_headers", {})
 
             total_pages = len(df_c) if not df_c.empty else 0
             comm_schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
@@ -585,9 +809,12 @@ with tab_report:
                         <div class="title">Connext Global Solutions — Enterprise Digital Audit</div>
                         <div class="sub">Executive Architecture, Schema, AEO & Search Benchmark</div>
                     </div>
+                    <div>
+                        <img src="data:image/png;base64,{CONNEXT_LOGO_B64}" style="width: 140px;">
+                    </div>
                 </div>
 
-                <p><strong>Audited Entity:</strong> {target_name} | <strong>llms.txt AI Standard:</strong> {'Active' if st.session_state.get('has_llms') else 'Missing (404 Error)'}</p>
+                <p><strong>Audited Entity:</strong> {target_name} | <strong>Security Grade:</strong> {sec_res.get('Grade', 'N/A')} | <strong>llms.txt AI Standard:</strong> {'Active' if st.session_state.get('has_llms') else 'Missing (404 Error)'}</p>
 
                 <div class="metric-grid">
                     <div class="m-card">
