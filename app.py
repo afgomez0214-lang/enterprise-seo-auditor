@@ -504,6 +504,189 @@ def search_unlinked_brand_mentions(domain, serpapi_key, limit=10):
         return []
 
 # -----------------------------------------------------------------------------
+def parse_ads_timestamp(ts_val):
+    """Converts Unix epoch seconds (e.g. 1778975148) or ISO date strings into (YYYY-MM-DD, datetime_obj)."""
+    if ts_val is None or ts_val == "N/A" or str(ts_val).strip() == "":
+        return "N/A", None
+    s_val = str(ts_val).strip()
+    if s_val.replace(".", "", 1).isdigit():
+        try:
+            num = float(s_val)
+            if num > 1e11:
+                num = num / 1000.0
+            dt = datetime.utcfromtimestamp(num)
+            return dt.strftime("%Y-%m-%d"), dt
+        except Exception:
+            pass
+    for fmt in ("%Y-%m-%d", "%b %d, %Y", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(s_val[:10], fmt)
+            return dt.strftime("%Y-%m-%d"), dt
+        except Exception:
+            continue
+    return s_val, None
+
+def process_transparency_creatives(creatives, default_domain):
+    """Transforms raw SerpApi Google Ads Transparency Center creatives into actionable paid media intelligence."""
+    if not creatives:
+        return pd.DataFrame()
+    
+    # First pass to find the most recent timestamp in the dataset for relative recency calculation
+    parsed_dates = []
+    for c in creatives:
+        _, l_dt = parse_ads_timestamp(c.get("last_shown"))
+        if l_dt:
+            parsed_dates.append(l_dt)
+    max_dataset_dt = max(parsed_dates) if parsed_dates else datetime.utcnow()
+
+    ads_data = []
+    for c in creatives:
+        c_id = str(c.get("ad_creative_id", "N/A"))
+        adv_name = str(c.get("advertiser", "Verified Advertiser"))
+        adv_id = str(c.get("advertiser_id", "N/A"))
+        t_dom = str(c.get("target_domain", default_domain))
+        raw_fmt = str(c.get("format", "text")).lower().strip()
+        w = c.get("width")
+        h = c.get("height")
+        dim_str = f"{w}x{h}" if (w and h) else "Responsive / Auto"
+        thumb_url = str(c.get("image", "")) if c.get("image") else ""
+        preview = c.get("link") or c.get("details_link") or (
+            f"https://adstransparency.google.com/advertiser/{adv_id}/creative/{c_id}?region=anywhere"
+            if adv_id != "N/A" and c_id != "N/A" else "N/A"
+        )
+
+        # Accurate Channel & Format Classification (Fixes false GDN Image Banner bug on text ads)
+        if raw_fmt == "text":
+            channel_type = "🔍 Google Search Text Ad (SERP)"
+            fmt_clean = "Search Text Ad"
+            funnel_stage = "Bottom-of-Funnel (High-Intent Search)"
+        elif raw_fmt == "video":
+            channel_type = "🎬 YouTube / Video Ad"
+            fmt_clean = f"Video ({dim_str})" if w else "Video Ad"
+            funnel_stage = "Top/Mid-Funnel (Video Engagement)"
+        elif raw_fmt == "image":
+            channel_type = "🖼️ Display / PMax Image Banner"
+            fmt_clean = f"Image Banner ({dim_str})" if w else "Display Banner"
+            funnel_stage = "Mid-Funnel (Retargeting & Awareness)"
+        else:
+            channel_type = f"📢 Multi-Format / PMax ({raw_fmt.title()})"
+            fmt_clean = raw_fmt.title()
+            funnel_stage = "Cross-Channel PMax"
+
+        f_str, f_dt = parse_ads_timestamp(c.get("first_shown"))
+        l_str, l_dt = parse_ads_timestamp(c.get("last_shown"))
+        days_active = max(1, (l_dt - f_dt).days + 1) if (f_dt and l_dt) else 1
+        days_since_last = max(0, (max_dataset_dt - l_dt).days) if l_dt else 0
+
+        if days_since_last <= 7:
+            activity_status = "🟢 Active Now (Served Last 7d)"
+        elif days_since_last <= 30:
+            activity_status = "🟡 Active Recently (Last 30d)"
+        else:
+            activity_status = f"⚪ Historical ({days_since_last}d ago)"
+
+        if days_active >= 60:
+            longevity_tier = "🔥 Evergreen Winner (60+ Days)"
+            insight = f"Proven ROI Control Ad — Running continuously for {days_active} days ({funnel_stage.split('(')[0].strip()})"
+        elif days_active >= 15:
+            longevity_tier = "🟢 Scaling Creative (15–59 Days)"
+            insight = f"Active Scaling Ad — Running {days_active} days ({fmt_clean})"
+        else:
+            longevity_tier = "🧪 New / A-B Test (<15 Days)"
+            insight = f"Short Flight / Creative Test — {days_active} day(s) active"
+
+        ads_data.append({
+            "Ad_Preview": thumb_url,
+            "Advertiser": adv_name,
+            "Target_Domain": t_dom,
+            "Channel": channel_type,
+            "Format_Specs": fmt_clean,
+            "Funnel_Role": funnel_stage,
+            "Longevity_Tier": longevity_tier,
+            "Days_Active": days_active,
+            "First_Shown": f_str,
+            "Last_Shown": l_str,
+            "Activity_Status": activity_status,
+            "Strategic_Takeaway": insight,
+            "Creative_ID": c_id,
+            "Preview_Link": preview,
+            # Legacy compatibility aliases
+            "Format": fmt_clean,
+            "Type": channel_type
+        })
+
+    df_out = pd.DataFrame(ads_data)
+    if not df_out.empty:
+        df_out = df_out.sort_values(by=["Days_Active", "Last_Shown"], ascending=[False, False]).reset_index(drop=True)
+    return df_out
+
+def scan_live_serp_paid_ads(queries, target_domain, serpapi_key):
+    """Queries live Google Search SERPs to extract actual paid search headlines, descriptions, sitelinks & competitor conquesting."""
+    if not serpapi_key or not queries:
+        return pd.DataFrame()
+    target_host = urlparse(target_domain).netloc.replace("www.", "").lower() if "http" in target_domain else target_domain.replace("www.", "").lower()
+    brand_token = target_host.split(".")[0] if target_host else ""
+
+    serp_ads_rows = []
+    for q in queries[:8]:
+        try:
+            params = {
+                "engine": "google",
+                "q": q,
+                "location": "United States",
+                "hl": "en",
+                "gl": "us",
+                "api_key": serpapi_key
+            }
+            res = requests.get("https://serpapi.com/search", params=params, timeout=20).json()
+            all_ads = []
+            for pos_idx, ad in enumerate(res.get("ads", []) or res.get("top_ads", []), 1):
+                all_ads.append((f"#{pos_idx} Top SERP", ad))
+            for pos_idx, ad in enumerate(res.get("bottom_ads", []), 1):
+                all_ads.append((f"#{pos_idx} Bottom SERP", ad))
+
+            for slot_label, ad in all_ads:
+                link = ad.get("link") or ad.get("tracking_link", "N/A")
+                disp_link = ad.get("displayed_link", link)
+                adv_dom = urlparse(link).netloc.replace("www.", "").lower() if link.startswith("http") else str(disp_link).split("/")[0].replace("www.", "").lower()
+                is_own = (target_host in adv_dom) or (brand_token and brand_token in adv_dom)
+                is_brand_query = (brand_token and brand_token in q.lower())
+
+                if is_own:
+                    comp_status = "🟢 Your Brand Ad"
+                elif is_brand_query:
+                    comp_status = "🚨 Competitor Conquesting Your Brand!"
+                else:
+                    comp_status = "⚔️ Competitor Capturing Buyer Query"
+
+                sitelinks_list = []
+                if isinstance(ad.get("sitelinks"), dict):
+                    for sl_group in ad["sitelinks"].values():
+                        if isinstance(sl_group, list):
+                            for sl in sl_group:
+                                if isinstance(sl, dict) and sl.get("title"):
+                                    sitelinks_list.append(sl["title"])
+                elif isinstance(ad.get("sitelinks"), list):
+                    for sl in ad["sitelinks"]:
+                        if isinstance(sl, dict) and sl.get("title"):
+                            sitelinks_list.append(sl["title"])
+
+                serp_ads_rows.append({
+                    "Search_Query": q,
+                    "Ad_Position": slot_label,
+                    "Competitor_Status": comp_status,
+                    "Bidding_Domain": adv_dom or disp_link,
+                    "Live_Ad_Headline": ad.get("title", "N/A"),
+                    "Live_Ad_Description": ad.get("description") or ad.get("snippet", "N/A"),
+                    "Ad_Extensions_Sitelinks": " | ".join(sitelinks_list[:4]) if sitelinks_list else "None",
+                    "Landing_Page_URL": link
+                })
+        except Exception:
+            continue
+
+    return pd.DataFrame(serp_ads_rows)
+
+# -----------------------------------------------------------------------------
 # 1. SECRETS & API MANAGEMENT
 # -----------------------------------------------------------------------------
 serpapi_key = st.secrets.get("SERPAPI_KEY", "")
@@ -524,7 +707,7 @@ with st.sidebar:
             "df_equity", "suggested_organic_kws", "suggested_aeo_prompts",
             "df_organic_suggestions", "df_aeo_suggestions", "detected_industry",
             "sec_headers", "cwv_metrics", "crux_metrics", "safe_browsing",
-            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes"
+            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy"
         ]
         for k in keys_to_clear:
             st.session_state.pop(k, None)
@@ -564,6 +747,8 @@ if "df_crawl" not in st.session_state: st.session_state["df_crawl"] = pd.DataFra
 if "df_rankings" not in st.session_state: st.session_state["df_rankings"] = pd.DataFrame()
 if "df_aeo" not in st.session_state: st.session_state["df_aeo"] = pd.DataFrame()
 if "df_ads" not in st.session_state: st.session_state["df_ads"] = pd.DataFrame()
+if "df_serp_ads" not in st.session_state: st.session_state["df_serp_ads"] = pd.DataFrame()
+if "ads_ai_strategy" not in st.session_state: st.session_state["ads_ai_strategy"] = ""
 if "df_cannibal" not in st.session_state: st.session_state["df_cannibal"] = pd.DataFrame()
 if "df_equity" not in st.session_state: st.session_state["df_equity"] = pd.DataFrame()
 if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_organic_kws"] = ""
@@ -1816,14 +2001,23 @@ with tab_aeo:
 # TAB 6: PAID SEARCH & ADS TRANSPARENCY
 # =============================================================================
 with tab_ads:
-    st.subheader("Paid Search & Google Ads Transparency Center Audit")
-    st.write("Audit live Google Search Sponsored Ads and Google Ads Transparency Center creatives.")
+    st.subheader("Paid Search, Ad Creative Longevity & Competitor Conquesting Intelligence")
+    st.markdown("""
+    <div class="guide-box">
+        <strong>🎯 Why This Paid Media Audit Matters (Plain-English Guide):</strong><br>
+        • <strong>🔥 Evergreen Winner Detection (60+ Days Active):</strong> Advertisers quickly pause ads that lose money. Any ad running continuously for <strong>60+ days</strong> is a proven, profitable "control creative" generating positive ROI.<br>
+        • <strong>⚖️ Funnel & Channel Balance:</strong> Shows whether the domain is capturing ready-to-buy searchers (<code>🔍 Google Search Text Ads</code>) or only running awareness/retargeting banners (<code>🖼️ Display / Video</code>).<br>
+        • <strong>⚔️ Live SERP Competitor Conquesting:</strong> Scans live Google Search results to reveal exact competitor ad headlines, descriptions, landing pages, and whether rivals are bidding on your brand name.
+    </div>
+    """, unsafe_allow_html=True)
 
-    col_ad1, col_ad2 = st.columns([3, 1])
+    col_ad1, col_ad2, col_ad3 = st.columns([2.2, 1.2, 1.2])
     with col_ad1:
         default_ad_dom = urlparse(st.session_state.get("target_domain", "https://alphacord.com")).netloc.replace("www.", "") or "alphacord.com"
-        ad_target_domain = st.text_input("Advertiser Domain to Inspect", value=default_ad_dom)
+        ad_target_domain = st.text_input("Advertiser Domain to Inspect (e.g. alphacord.com or competitor.com)", value=default_ad_dom)
     with col_ad2:
+        ad_region = st.selectbox("Target Ad Region", ["2840 (United States)", "Anywhere (Global)", "2826 (United Kingdom)", "2124 (Canada)", "2036 (Australia)"], index=0)
+    with col_ad3:
         st.write("")
         st.write("")
         run_ads_btn = st.button("📊 Fetch Google Ads Intel", use_container_width=True)
@@ -1832,51 +2026,248 @@ with tab_ads:
         if not serpapi_key:
             st.error("SerpApi key required to query Google Ads Transparency Center.")
         else:
-            with st.spinner(f"Extracting active ad creatives for {ad_target_domain}..."):
+            clean_ad_dom = urlparse(ad_target_domain).netloc.replace("www.", "") if "http" in ad_target_domain else ad_target_domain.replace("www.", "").strip("/")
+            with st.spinner(f"Extracting & analyzing Google Ads Transparency Center portfolio for {clean_ad_dom}..."):
                 try:
                     params = {
                         "engine": "google_ads_transparency_center",
-                        "text": ad_target_domain,
+                        "text": clean_ad_dom,
                         "api_key": serpapi_key,
                         "num": 40
                     }
+                    if "Anywhere" not in ad_region:
+                        params["region"] = ad_region.split()[0].strip()
                     res = requests.get("https://serpapi.com/search", params=params, timeout=25).json()
                     creatives = res.get("ad_creatives", [])
-                    
-                    ads_data = []
-                    for c in creatives:
-                        preview = c.get("link") or c.get("details_link", "N/A")
-                        c_type = "GDN Image Banner" if "simgad" in str(c.get("image", "")) else ("Responsive Display" if "displayads" in str(preview) else "Search Text Ad")
-                        ads_data.append({
-                            "Creative_ID": c.get("ad_creative_id", "N/A"),
-                            "Format": c.get("format", "text"),
-                            "Type": c_type,
-                            "First_Shown": c.get("first_shown", "N/A"),
-                            "Last_Shown": c.get("last_shown", "N/A"),
-                            "Preview_Link": preview
-                        })
-                    
-                    df_ads = pd.DataFrame(ads_data)
+                    df_ads = process_transparency_creatives(creatives, clean_ad_dom)
                     st.session_state["df_ads"] = df_ads
-                    st.success(f"✓ Extracted {len(df_ads)} active ad creatives!")
+                    if not df_ads.empty:
+                        st.success(f"✓ Extracted and analyzed {len(df_ads)} ad creatives for **{df_ads['Advertiser'].iloc[0]}** (`{clean_ad_dom}`)!")
+                    else:
+                        st.warning(f"⚠️ 0 active ads found in Google Ads Transparency Center for `{clean_ad_dom}`.")
                 except Exception as e:
                     st.error(f"Error extracting Ads Transparency data: {e}")
 
     if not st.session_state["df_ads"].empty:
         df_ad = st.session_state["df_ads"]
-        st.metric("Total Active Google Ads Creatives", len(df_ad))
-        
-        # Visual Chart: Ad Types Breakdown
-        st.markdown("##### 📊 Active Ad Creative Formats Distribution")
-        st.bar_chart(df_ad["Type"].value_counts(), color="#004b93")
+        tot_ads = len(df_ad)
+        adv_entity = df_ad["Advertiser"].iloc[0] if "Advertiser" in df_ad.columns else ad_target_domain
+        evergreen_cnt = int((df_ad["Days_Active"] >= 60).sum()) if "Days_Active" in df_ad.columns else 0
+        search_cnt = int(df_ad["Channel"].str.contains("Search", case=False, na=False).sum()) if "Channel" in df_ad.columns else 0
+        display_vid_cnt = tot_ads - search_cnt
+        avg_days = int(df_ad["Days_Active"].mean()) if "Days_Active" in df_ad.columns else 1
+        max_days = int(df_ad["Days_Active"].max()) if "Days_Active" in df_ad.columns else 1
 
-        st.dataframe(df_ad[["Creative_ID", "Format", "Type", "First_Shown", "Last_Shown", "Preview_Link"]], use_container_width=True)
+        st.markdown(f"#### 🏛️ Verified Advertiser Entity: **{adv_entity}** (`{df_ad['Target_Domain'].iloc[0]}`)")
+        ak1, ak2, ak3, ak4, ak5 = st.columns(5)
+        ak1.metric("Tracked Ad Creatives", f"{tot_ads} Ads", delta=f"{int(df_ad['Activity_Status'].str.contains('Active Now').sum())} Served Last 7d")
+        ak2.metric("🔥 Evergreen Winners (60+d)", f"{evergreen_cnt} Ads ({evergreen_cnt/max(1,tot_ads)*100:.0f}%)", help="Ads running 60+ days continuously — proven ROI winners.")
+        ak3.metric("🔍 Search Text Ads (SERP)", f"{search_cnt} ({search_cnt/max(1,tot_ads)*100:.0f}%)", help="Bottom-of-funnel high-intent search text ads.")
+        ak4.metric("🖼️ Display & Video Ads", f"{display_vid_cnt} ({display_vid_cnt/max(1,tot_ads)*100:.0f}%)", help="Mid/top-of-funnel banner and video creatives.")
+        ak5.metric("Avg. Flight Longevity", f"{avg_days} Days", delta=f"Longest: {max_days} Days")
+
+        # Strategic Diagnosis Callout Box
+        if search_cnt == tot_ads:
+            mix_diagnosis = f"<strong>100% Search Text Ad Focus:</strong> {adv_entity} allocates its tracked ad inventory exclusively to high-intent Google Search Text Ads, prioritizing bottom-of-funnel lead capture over display banners or YouTube video."
+        elif search_cnt == 0:
+            mix_diagnosis = f"<strong>⚠️ Zero Search Text Ads Detected (100% Display/Video):</strong> {adv_entity} is running display/video banners without active Search Text Ads, leaving high-intent bottom-of-funnel search queries vulnerable to competitors."
+        else:
+            mix_diagnosis = f"<strong>Balanced Full-Funnel Mix:</strong> {adv_entity} combines <strong>{search_cnt} Search Text Ads</strong> ({search_cnt/tot_ads*100:.0f}%) for bottom-of-funnel demand capture with <strong>{display_vid_cnt} Display/Video Ads</strong> ({display_vid_cnt/tot_ads*100:.0f}%) for retargeting and awareness."
+
+        st.markdown(f"""
+        <div style="background:#f8fafc; border:1px solid #cbd5e1; border-left:4px solid #e85122; padding:12px 16px; border-radius:4px; margin:10px 0 16px 0; font-size:13px; line-height:1.55;">
+            📊 <strong>Paid Media Portfolio Diagnosis:</strong> {mix_diagnosis}<br>
+            🏆 <strong>Creative Longevity Insight:</strong> <strong>{evergreen_cnt} of {tot_ads} creatives ({evergreen_cnt/max(1,tot_ads)*100:.0f}%)</strong> have been running for over 60 days (longest active flight: <strong>{max_days} days</strong> from <code>{df_ad['First_Shown'].min()}</code> to <code>{df_ad['Last_Shown'].max()}</code>), indicating stable evergreen control messaging.
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_ch1, col_ch2 = st.columns(2)
+        with col_ch1:
+            st.markdown("##### 📊 Ad Channel & Format Allocation")
+            st.bar_chart(df_ad["Channel"].value_counts(), color="#004b93")
+        with col_ch2:
+            st.markdown("##### 🏆 Ad Creative Longevity Tiers (Winning Controls vs. Tests)")
+            st.bar_chart(df_ad["Longevity_Tier"].value_counts(), color="#e85122")
+
+        # Sub-tabs for Visual Gallery vs. Structured Table
+        ad_view_tab1, ad_view_tab2 = st.tabs([
+            "📋 1. Actionable Ad Creative Inventory (Human Dates & Longevity)",
+            "🖼️ 2. Visual Ad Creative Gallery (Inspect Top Winning Ads)"
+        ])
+
+        with ad_view_tab1:
+            filter_tier = st.selectbox(
+                "Filter Creatives by Longevity / Channel:",
+                ["All Creatives", "🔥 Evergreen Winners Only (60+ Days)", "🔍 Search Text Ads Only", "🖼️ Display / Video Ads Only"],
+                key="ads_table_filter"
+            )
+            disp_ads = df_ad.copy()
+            if "Evergreen" in filter_tier:
+                disp_ads = disp_ads[disp_ads["Days_Active"] >= 60]
+            elif "Search Text" in filter_tier:
+                disp_ads = disp_ads[disp_ads["Channel"].str.contains("Search", case=False, na=False)]
+            elif "Display" in filter_tier:
+                disp_ads = disp_ads[~disp_ads["Channel"].str.contains("Search", case=False, na=False)]
+
+            st.dataframe(
+                disp_ads[[
+                    "Ad_Preview", "Channel", "Longevity_Tier", "Days_Active",
+                    "First_Shown", "Last_Shown", "Activity_Status",
+                    "Strategic_Takeaway", "Advertiser", "Preview_Link"
+                ]],
+                column_config={
+                    "Ad_Preview": st.column_config.ImageColumn("Creative Thumbnail", help="Visual snapshot rendered by Google Ads Transparency Center."),
+                    "Channel": st.column_config.TextColumn("Ad Channel & Format"),
+                    "Longevity_Tier": st.column_config.TextColumn("Performance Tier"),
+                    "Days_Active": st.column_config.ProgressColumn("Days Running", format="%d days", min_value=1, max_value=max(90, max_days)),
+                    "First_Shown": st.column_config.TextColumn("First Seen (YYYY-MM-DD)"),
+                    "Last_Shown": st.column_config.TextColumn("Last Seen (YYYY-MM-DD)"),
+                    "Activity_Status": st.column_config.TextColumn("Recency Status"),
+                    "Strategic_Takeaway": st.column_config.TextColumn("Strategic Interpretation"),
+                    "Advertiser": st.column_config.TextColumn("Verified Advertiser"),
+                    "Preview_Link": st.column_config.LinkColumn("Google Ad Link", display_text="Open Live Ad ↗")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.download_button(
+                label="⬇️ Download Enriched Google Ads Inventory (CSV)",
+                data=disp_ads.drop(columns=["Format", "Type"], errors="ignore").to_csv(index=False),
+                file_name=f"google_ads_intelligence_{ad_target_domain}.csv",
+                mime="text/csv"
+            )
+
+        with ad_view_tab2:
+            st.markdown("##### 🖼️ Visual Ad Gallery — Top Longest-Running Evergreen Creatives")
+            st.caption("Displays visual ad thumbnails captured by Google Ads Transparency Center, ordered by total days active.")
+            gallery_ads = df_ad[df_ad["Ad_Preview"].astype(str).str.startswith("http")].head(12)
+            if gallery_ads.empty:
+                st.info("No direct image thumbnails returned by Google for these text creatives. Click 'Open Live Ad ↗' in the table tab to view them directly on Google Ads Transparency Center.")
+            else:
+                g_cols = st.columns(3)
+                for idx_g, (_, g_row) in enumerate(gallery_ads.iterrows()):
+                    with g_cols[idx_g % 3]:
+                        st.markdown(f"""
+                        <div style="background:#f8fafc; border:1px solid #cbd5e1; border-top:3px solid #004b93; border-radius:6px; padding:10px; margin-bottom:12px; font-size:12px;">
+                            <div style="font-weight:bold; color:#004b93;">{g_row['Channel']}</div>
+                            <div style="color:#dc2626; font-weight:bold; margin:2px 0;">{g_row['Longevity_Tier']} ({g_row['Days_Active']} Days)</div>
+                            <div style="color:#475569; font-size:11px;">📅 {g_row['First_Shown']} ➔ {g_row['Last_Shown']}</div>
+                            <div style="margin-top:4px;"><a href="{g_row['Preview_Link']}" target="_blank" style="color:#e85122; font-weight:bold; text-decoration:none;">Open in Google Transparency ↗</a></div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        try:
+                            st.image(g_row["Ad_Preview"], use_container_width=True)
+                        except Exception:
+                            pass
+
+    # -------------------------------------------------------------------------
+    # MODULE 6B: LIVE GOOGLE SEARCH PAID SERP & COMPETITOR CONQUESTING SCANNER
+    # -------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("⚔️ Live Google Search Paid SERP & Competitor Ad Copy Scanner")
+    st.markdown("""
+    <div class="guide-box">
+        <strong>🎯 Why Use This Scanner?</strong> Google Ads Transparency Center shows historical creative IDs, but it does <em>not</em> show which keywords trigger those ads or what exact Headlines, Descriptions, Sitelinks, and Landing Pages your competitors are using on Page 1 today.<br>
+        Run this scanner to extract <strong>live Sponsored Search Ads</strong> across your brand name and top commercial keywords.
+    </div>
+    """, unsafe_allow_html=True)
+
+    brand_seed = urlparse(st.session_state.get("target_domain", ad_target_domain)).netloc.replace("www.", "").split(".")[0] or "alphacord"
+    existing_kws = [k.strip() for k in st.session_state.get("suggested_organic_kws", "").split("\n") if k.strip()][:5]
+    default_ppc_kws = "\n".join([brand_seed, f"{brand_seed} reviews", f"{brand_seed} pricing"] + (existing_kws if existing_kws else ["cord blood banking", "stem cell banking cost", "best newborn stem cell bank"]))
+
+    col_ppc1, col_ppc2 = st.columns([3, 1])
+    with col_ppc1:
+        ppc_kw_input = st.text_area("Keywords to Scan for Live Google Sponsored Search Ads (Max 8 per scan):", value=default_ppc_kws, height=115)
+    with col_ppc2:
+        st.write("")
+        st.write("")
+        run_ppc_serp_btn = st.button("🔎 Scan Live Paid Search Ads", use_container_width=True)
+
+    if run_ppc_serp_btn:
+        if not serpapi_key:
+            st.error("SerpApi key required.")
+        else:
+            q_list = [x.strip() for x in ppc_kw_input.split("\n") if x.strip()][:8]
+            with st.spinner(f"Scanning live Google Search sponsored slots across {len(q_list)} queries..."):
+                df_serp_ads = scan_live_serp_paid_ads(q_list, ad_target_domain, serpapi_key)
+                st.session_state["df_serp_ads"] = df_serp_ads
+                if not df_serp_ads.empty:
+                    st.success(f"✓ Captured {len(df_serp_ads)} live Sponsored Search Ads across {len(q_list)} queries!")
+                else:
+                    st.info("ℹ️ 0 live Sponsored Search Ads triggered on Google for these exact queries right now (uncontested paid search whitespace!).")
+
+    if not st.session_state.get("df_serp_ads", pd.DataFrame()).empty:
+        df_sa = st.session_state["df_serp_ads"]
+        conquest_cnt = int(df_sa["Competitor_Status"].str.contains("Conquesting", case=False, na=False).sum())
+        own_cnt = int(df_sa["Competitor_Status"].str.contains("Your Brand", case=False, na=False).sum())
+        comp_bidding_cnt = len(df_sa) - own_cnt
+
+        ps1, ps2, ps3 = st.columns(3)
+        ps1.metric("Live Sponsored Ads Captured", f"{len(df_sa)} Ads")
+        ps2.metric("🚨 Brand Conquesting Alerts", f"{conquest_cnt} Competitor Ads", delta="Rivals Bidding on Your Brand!" if conquest_cnt > 0 else "Brand Protected", delta_color="inverse" if conquest_cnt > 0 else "normal")
+        ps3.metric("⚔️ Competitor vs. Own Share", f"{comp_bidding_cnt} Rival / {own_cnt} Own")
+
+        st.dataframe(
+            df_sa,
+            column_config={
+                "Search_Query": st.column_config.TextColumn("Keyword Searched"),
+                "Ad_Position": st.column_config.TextColumn("SERP Slot"),
+                "Competitor_Status": st.column_config.TextColumn("Threat Status"),
+                "Bidding_Domain": st.column_config.TextColumn("Advertiser Domain"),
+                "Live_Ad_Headline": st.column_config.TextColumn("Live Ad Headline"),
+                "Live_Ad_Description": st.column_config.TextColumn("Live Ad Description Copy"),
+                "Ad_Extensions_Sitelinks": st.column_config.TextColumn("Sitelink Extensions"),
+                "Landing_Page_URL": st.column_config.LinkColumn("Destination Landing Page", display_text="Inspect LP ↗")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+
         st.download_button(
-            label="⬇️ Download Active Ads Inventory (CSV)",
-            data=df_ad.to_csv(index=False),
-            file_name="google_ads_transparency_audit.csv",
+            label="⬇️ Download Live Competitor Search Ad Copy & Landing Pages (CSV)",
+            data=df_sa.to_csv(index=False),
+            file_name=f"live_paid_search_conquesting_{ad_target_domain}.csv",
             mime="text/csv"
         )
+
+    # -------------------------------------------------------------------------
+    # MODULE 6C: GEMINI AI PAID MEDIA STRATEGY & COUNTER-ATTACK AD COPYWRITER
+    # -------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🤖 AI Paid Media Strategy & Counter-Attack Ad Copy Generator (Gemini)")
+    if st.button("✨ Generate Executive Paid Media Diagnosis & High-Converting RSA Ad Copy", use_container_width=True):
+        if not gemini_key:
+            st.error("Please provide your Gemini API Key in the sidebar.")
+        else:
+            with st.spinner("Analyzing ad portfolio longevity, channel mix, and competitor search copy..."):
+                df_ad_curr = st.session_state.get("df_ads", pd.DataFrame())
+                df_sa_curr = st.session_state.get("df_serp_ads", pd.DataFrame())
+                trans_summary = f"Total Transparency Ads: {len(df_ad_curr)}"
+                if not df_ad_curr.empty:
+                    trans_summary += f" | Channels: {df_ad_curr['Channel'].value_counts().to_dict()} | Evergreen (60+d): {int((df_ad_curr['Days_Active']>=60).sum())} | Avg Flight: {int(df_ad_curr['Days_Active'].mean())} days."
+                serp_summary = df_sa_curr[["Search_Query", "Bidding_Domain", "Live_Ad_Headline", "Live_Ad_Description"]].head(10).to_dict(orient="records") if not df_sa_curr.empty else "No live SERP ads scanned yet."
+
+                ads_prompt = f"""You are a Senior Paid Media & Google Ads Strategist at Connext Global Solutions.
+Analyze the Paid Search & Google Ads data for `{ad_target_domain}`:
+- Transparency Center Portfolio: {trans_summary}
+- Live Google SERP Competitor Ads: {serp_summary}
+
+Provide a clear, executive-ready Paid Media Strategy & Counter-Attack Plan:
+1. **Paid Media Portfolio & Funnel Diagnosis:** Evaluate their channel mix (Search vs. Display/Video), creative testing velocity vs. evergreen control reliance, and competitor conquesting risk.
+2. **Budget Efficiency & Conquesting Defense Recommendations:** 3 specific tactical actions to stop budget waste and capture high-intent bottom-of-funnel demand.
+3. **Ready-to-Launch Responsive Search Ad (RSA) Counter-Attack Copy:**
+   - **5 High-Intent Headlines** (strictly <= 30 characters each, with character count shown)
+   - **3 Persuasive Descriptions** (strictly <= 90 characters each, with character count shown)
+   - **4 Recommended Sitelink Extensions**"""
+                ai_ads_out, mod_used = query_gemini_dynamic(ads_prompt, gemini_key)
+                if ai_ads_out:
+                    st.session_state["ads_ai_strategy"] = ai_ads_out
+                    st.success(f"✓ Paid Media Strategy & RSA Ad Copy Generated ({mod_used})!")
+
+    if st.session_state.get("ads_ai_strategy"):
+        st.markdown(st.session_state["ads_ai_strategy"])
 
 # =============================================================================
 # TAB 7: CORE WEB VITALS & CHROME UX REPORT (CRUX) FIELD DATA
@@ -2941,12 +3332,15 @@ def build_executive_dossier_html(
     ads_rows = ""
     if not df_ads.empty:
         for _, r in df_ads.head(8).iterrows():
+            ch_lbl = r.get('Channel', r.get('Type', 'Search Text Ad'))
+            days_lbl = f"{r.get('Days_Active', 1)} Days ({r.get('First_Shown', 'N/A')} to {r.get('Last_Shown', 'N/A')})"
+            tier_lbl = r.get('Longevity_Tier', 'Active Creative')
+            takeaway_lbl = r.get('Strategic_Takeaway', f"Advertiser: {r.get('Advertiser', 'Verified')}")
             ads_rows += f"""<tr>
-                <td>{r.get('Creative_ID', 'N/A')}</td>
-                <td>{r.get('Format', 'N/A')}</td>
-                <td>{r.get('Type', 'N/A')}</td>
-                <td>{r.get('First_Shown', 'N/A')}</td>
-                <td>{r.get('Last_Shown', 'N/A')}</td>
+                <td style="font-weight:bold;">{ch_lbl}</td>
+                <td>{days_lbl}</td>
+                <td style="font-weight:bold; color:{'#16a34a' if 'Evergreen' in str(tier_lbl) else '#004b93'};">{tier_lbl}</td>
+                <td style="font-size:6.8pt;">{takeaway_lbl}</td>
             </tr>"""
 
     weaknesses = []
@@ -3566,10 +3960,10 @@ def build_executive_dossier_html(
         <table>
             <thead>
                 <tr>
-                    <th style="width:20%;">Campaign Channel</th>
-                    <th style="width:20%;">Active Ad Count</th>
-                    <th style="width:30%;">Creative Formats Detected</th>
-                    <th style="width:30%;">Strategic Implication</th>
+                    <th style="width:24%;">Ad Channel & Format</th>
+                    <th style="width:24%;">Active Flight & Dates</th>
+                    <th style="width:22%;">Longevity Tier</th>
+                    <th style="width:30%;">Strategic Takeaway</th>
                 </tr>
             </thead>
             <tbody>
