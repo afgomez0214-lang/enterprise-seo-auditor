@@ -4,7 +4,9 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import weasyprint
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse, urljoin
+import html
+import base64
+from urllib.parse import urlparse, urljoin, parse_qs, urlencode, urlunparse
 from concurrent.futures import ThreadPoolExecutor
 import re
 import json
@@ -686,6 +688,91 @@ def scan_live_serp_paid_ads(queries, target_domain, serpapi_key):
 
     return pd.DataFrame(serp_ads_rows)
 
+def esc(val):
+    """Safely escapes dynamic strings for HTML/WeasyPrint rendering."""
+    return html.escape(str(val)) if val is not None else ""
+
+def clean_display_url(raw_url):
+    """Strips noisy tracking parameters (?srsltid=, ?utm_...) for clean tables and PDFs."""
+    if not raw_url or str(raw_url).strip() in ("N/A", "None", "Error", ""):
+        return "—"
+    s = str(raw_url).strip()
+    if not s.startswith("http"):
+        return s
+    try:
+        p = urlparse(s)
+        qs = parse_qs(p.query, keep_blank_values=True)
+        clean_qs = {k: v for k, v in qs.items() if not k.lower().startswith(("srsltid", "utm_", "gclid", "fbclid", "msclkid"))}
+        new_q = urlencode(clean_qs, doseq=True)
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, new_q, ""))
+    except Exception:
+        return s
+
+def detect_audit_scope_label(df_c, target_domain, custom_label=""):
+    """Infers a clean, human-readable scope title for the audited batch of pages."""
+    if custom_label and custom_label.strip():
+        return custom_label.strip()
+    if df_c.empty:
+        return "Website Digital & Search Audit"
+    urls = df_c["URL"].dropna().tolist()
+    n = len(urls)
+    if n == 1:
+        path = urlparse(urls[0]).path.strip("/")
+        return f"Focused Page Audit ({'/' + path if path else 'Homepage'})"
+    paths = [urlparse(u).path.strip("/") for u in urls if urlparse(u).path.strip("/")]
+    if paths:
+        top_folders = [p.split("/")[0] for p in paths]
+        most_common_folder, count = Counter(top_folders).most_common(1)[0]
+        if count >= max(2, int(n * 0.65)):
+            folder_map = {
+                "products": "Product & Pricing Pages (/products/)",
+                "pages": "Core Informational & Service Pages (/pages/)",
+                "blogs": "Blog & Educational Articles (/blogs/)",
+                "blog": "Blog & Educational Articles (/blog/)",
+                "collections": "Category & Collection Pages (/collections/)",
+                "solutions": "Solution & Service Pages (/solutions/)",
+                "services": "Service Offering Pages (/services/)",
+                "case-studies": "Case Studies & Client Stories (/case-studies/)"
+            }
+            friendly = folder_map.get(most_common_folder.lower(), f"Section Pages (/{most_common_folder}/)")
+            return f"{friendly} — {n} Pages"
+    return f"Website Audit ({n} Pages Evaluated)"
+
+def get_safe_logo_src(logo_url):
+    """Caches logo as base64 data URI with inline SVG fallback so WeasyPrint never fails on network timeouts."""
+    if "cached_logo_b64" in st.session_state and st.session_state["cached_logo_b64"]:
+        return st.session_state["cached_logo_b64"]
+    fallback_svg = (
+        "data:image/svg+xml;utf8,"
+        "<svg xmlns='http://www.w3.org/2000/svg' width='140' height='36' viewBox='0 0 140 36'>"
+        "<text x='0' y='26' font-family='DejaVu Sans, Arial, sans-serif' font-size='24' font-weight='bold' fill='%23004b93'>connext</text>"
+        "<path d='M2 8 Q 35 0, 72 8' stroke='%23e85122' stroke-width='2.5' fill='none'/>"
+        "</svg>"
+    )
+    try:
+        r = requests.get(logo_url, timeout=5)
+        if r.status_code == 200 and r.content and "image" in r.headers.get("Content-Type", "").lower():
+            mime = r.headers.get("Content-Type", "image/png").split(";")[0].strip()
+            b64 = base64.b64encode(r.content).decode("ascii")
+            data_uri = f"data:{mime};base64,{b64}"
+            st.session_state["cached_logo_b64"] = data_uri
+            return data_uri
+    except Exception:
+        pass
+    return fallback_svg
+
+def fetch_serpapi_with_retry(params, max_retries=2, timeout=28):
+    """Queries SerpApi with automatic retry to eliminate read timeout errors."""
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.get("https://serpapi.com/search", params=params, timeout=timeout)
+            if r.status_code == 200:
+                return r.json(), None
+        except Exception as e:
+            if attempt == max_retries:
+                return None, str(e)
+    return None, "Timeout"
+
 # -----------------------------------------------------------------------------
 # 1. SECRETS & API MANAGEMENT
 # -----------------------------------------------------------------------------
@@ -707,7 +794,7 @@ with st.sidebar:
             "df_equity", "suggested_organic_kws", "suggested_aeo_prompts",
             "df_organic_suggestions", "df_aeo_suggestions", "detected_industry",
             "sec_headers", "cwv_metrics", "crux_metrics", "safe_browsing",
-            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy"
+            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64"
         ]
         for k in keys_to_clear:
             st.session_state.pop(k, None)
@@ -1846,25 +1933,21 @@ with tab_serp:
             
             prog = st.progress(0)
             for idx, kw in enumerate(kws):
-                try:
-                    params = {"engine": "google", "q": kw, "location": "United States", "hl": "en", "gl": "us", "api_key": serpapi_key}
-                    res = requests.get("https://serpapi.com/search", params=params, timeout=20).json()
-                    
+                params = {"engine": "google", "q": kw, "location": "United States", "hl": "en", "gl": "us", "api_key": serpapi_key}
+                res, err_msg = fetch_serpapi_with_retry(params, max_retries=2, timeout=28)
+                if res:
                     found_rank = "> 20 (Absent)"
-                    ranking_url = "N/A"
-                    top_competitor = "N/A"
-                    
+                    ranking_url = "—"
+                    top_competitor = "—"
                     org_results = res.get("organic_results", [])
                     if org_results:
                         top_competitor = urlparse(org_results[0].get("link", "")).netloc.replace("www.", "")
-                    
                     for pos, item in enumerate(org_results[:20], 1):
                         link = item.get("link", "")
                         if target_host in link:
                             found_rank = f"#{pos}"
-                            ranking_url = link
+                            ranking_url = clean_display_url(link)
                             break
-                            
                     records.append({
                         "Keyword": kw,
                         "Target_Rank": found_rank,
@@ -1872,9 +1955,14 @@ with tab_serp:
                         "Top_Ranking_Competitor": top_competitor,
                         "Status": "Visible" if "#" in found_rank else "Absent"
                     })
-                except Exception as e:
-                    records.append({"Keyword": kw, "Target_Rank": "Error", "Ranking_URL": str(e), "Top_Ranking_Competitor": "N/A", "Status": "Error"})
-                
+                else:
+                    records.append({
+                        "Keyword": kw,
+                        "Target_Rank": "Not Checked (Timeout)",
+                        "Ranking_URL": "—",
+                        "Top_Ranking_Competitor": "—",
+                        "Status": "Timeout"
+                    })
                 prog.progress((idx + 1) / len(kws))
                 
             df_rank = pd.DataFrame(records)
@@ -1883,8 +1971,9 @@ with tab_serp:
 
     if not st.session_state["df_rankings"].empty:
         df_r = st.session_state["df_rankings"]
-        absent_count = (df_r["Target_Rank"] == "> 20 (Absent)").sum()
-        invisibility_pct = (absent_count / len(df_r)) * 100
+        valid_r_ui = df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout", case=False, na=False)]
+        absent_count = (valid_r_ui["Target_Rank"] == "> 20 (Absent)").sum()
+        invisibility_pct = (absent_count / max(1, len(valid_r_ui))) * 100
         
         c1, c2 = st.columns(2)
         c1.metric("Organic Invisibility Rate (Absent from Top 20)", f"{invisibility_pct:.1f}%")
@@ -1944,34 +2033,43 @@ with tab_aeo:
 
             prog_aeo = st.progress(0)
             for idx, q in enumerate(aeo_queries):
-                try:
-                    params = {"engine": "google", "q": q, "location": "United States", "hl": "en", "gl": "us", "api_key": serpapi_key}
-                    res = requests.get("https://serpapi.com/search", params=params, timeout=20).json()
-                    
+                params = {"engine": "google", "q": q, "location": "United States", "hl": "en", "gl": "us", "api_key": serpapi_key}
+                res, err_msg = fetch_serpapi_with_retry(params, max_retries=2, timeout=28)
+                if res:
                     ai_overview = res.get("ai_overview", {})
                     has_aio = bool(ai_overview)
-                    
                     cited = False
                     winning_sources = []
-                    
                     if has_aio:
-                        references = ai_overview.get("references", [])
-                        for ref in references:
+                        if not ai_overview.get("references") and ai_overview.get("serpapi_link"):
+                            try:
+                                aio_full = requests.get(ai_overview["serpapi_link"], params={"api_key": serpapi_key}, timeout=12).json()
+                                ai_overview = aio_full.get("ai_overview", ai_overview)
+                            except Exception:
+                                pass
+                        for ref in ai_overview.get("references", []):
                             ref_link = ref.get("link", "")
-                            winning_sources.append(urlparse(ref_link).netloc.replace("www.", ""))
-                            if target_host in ref_link:
-                                cited = True
-                    
+                            if ref_link:
+                                dom_ref = urlparse(ref_link).netloc.replace("www.", "")
+                                if dom_ref and dom_ref not in winning_sources:
+                                    winning_sources.append(dom_ref)
+                                if target_host in ref_link:
+                                    cited = True
                     aeo_records.append({
                         "Buyer_Query": q,
                         "AI_Overview_Generated": "Yes" if has_aio else "No",
                         "Target_Cited": "✓ Yes" if cited else "🔴 Omitted",
-                        "Cited_Competitors": ", ".join(winning_sources[:3]) if winning_sources else "None",
+                        "Cited_Competitors": ", ".join(winning_sources[:3]) if winning_sources else ("AI Summary (No External Links)" if has_aio else "None"),
                         "Outcome": "Won" if cited else "Competitor Won"
                     })
-                except Exception as e:
-                    aeo_records.append({"Buyer_Query": q, "AI_Overview_Generated": "Error", "Target_Cited": "Error", "Cited_Competitors": str(e), "Outcome": "Error"})
-                
+                else:
+                    aeo_records.append({
+                        "Buyer_Query": q,
+                        "AI_Overview_Generated": "Timeout",
+                        "Target_Cited": "Not Checked (Timeout)",
+                        "Cited_Competitors": "—",
+                        "Outcome": "Timeout"
+                    })
                 prog_aeo.progress((idx + 1) / len(aeo_queries))
 
             df_aeo = pd.DataFrame(aeo_records)
@@ -2886,129 +2984,176 @@ with tab_dashboard:
 
 
 def build_executive_summary_1page_html(
-    df_c, df_r, df_a, df_eq, df_can, df_ads, 
-    cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot, 
-    target_name, has_llms, logo_url
+    df_c, df_r, df_a, df_eq, df_can, df_ads,
+    cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot,
+    target_name, has_llms, logo_url, crawly_data=None,
+    section_label="", client_name=""
 ):
+    crawly_data = crawly_data or {}
     total_pages = len(df_c) if not df_c.empty else 0
-    is_thin = (total_pages <= 2)
-    comm_schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
-    invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 100.0
-    aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 100.0
-    orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty and "Inbound_Editorial_Links" in df_eq.columns else 0.0
-    avg_a11y = round(df_c["A11y_Score"].mean()) if not df_c.empty and "A11y_Score" in df_c.columns else 70
-    mashed_count = int(df_c["Concatenated_H1"].sum()) if not df_c.empty else 0
-    
-    sec_grade = sec_res.get("Grade", "Grade B (Adequate)")
-    cwv_score = 69
-    try:
-        cwv_score = int(cwv_res.get("Score", 69))
-    except Exception:
-        cwv_score = 69
-        
-    raw_lcp = str(cwv_res.get("LCP", "10.1 s"))
+    is_single_or_thin = (total_pages <= 2)
+    clean_host = urlparse(target_name).netloc.replace("www.", "") or target_name
+    brand_display = client_name.strip() if client_name and client_name.strip() else clean_host.split(".")[0].title()
+    scope_title = detect_audit_scope_label(df_c, target_name, section_label)
 
-    # Dynamic SWOT bullet points
-    weaknesses = []
-    opportunities = []
-    strengths = []
-    threats = []
+    comm_schema_cnt = int(df_c["Commercial_Schema"].sum()) if (not df_c.empty and "Commercial_Schema" in df_c.columns) else 0
+    comm_schema_pct = (comm_schema_cnt / total_pages * 100) if total_pages > 0 else 0.0
+    missing_schema_pct = max(0.0, 100.0 - comm_schema_pct)
 
-    if is_thin:
-        weaknesses.append(f"<strong>Severe Topical Thinness ({total_pages} Page(s)):</strong> Domain lacks dedicated solution leaf pages, making commercial and organic ranking impossible for its medical service lines.")
-        opportunities.append("<strong>Information Architecture Expansion:</strong> Deploy dedicated commercial leaf pages (/solutions/newborn-stem-cells/, /solutions/reproductive-fertility/, etc.) to establish topical search authority.")
-        threats.append("<strong>Competitor Search Dominance:</strong> Competitors with 20+ dedicated solution pages capture 100% of non-branded organic and generative search traffic.")
+    thin_pages_df = df_c[df_c["Word_Count"] < 300] if (not df_c.empty and "Word_Count" in df_c.columns) else pd.DataFrame()
+    thin_cnt = len(thin_pages_df)
+    missing_meta_cnt = int(((df_c["Meta_Title_Status"] == "Missing") | (df_c["Meta_Desc_Status"] == "Missing")).sum()) if (not df_c.empty and "Meta_Title_Status" in df_c.columns) else 0
+    mashed_count = int(df_c["Concatenated_H1"].sum()) if (not df_c.empty and "Concatenated_H1" in df_c.columns) else 0
+    avg_a11y = round(df_c["A11y_Score"].mean()) if (not df_c.empty and "A11y_Score" in df_c.columns) else 75
+
+    valid_r = df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout|Skipped", case=False, na=False)] if not df_r.empty else pd.DataFrame()
+    has_serp = not valid_r.empty
+    invis_pct = ((valid_r["Target_Rank"] == "> 20 (Absent)").sum() / len(valid_r) * 100) if has_serp else None
+
+    valid_a = df_a[~df_a["Target_Cited"].astype(str).str.contains("Error|Timeout|Skipped", case=False, na=False)] if not df_a.empty else pd.DataFrame()
+    has_aeo = not valid_a.empty
+    aeo_loss_pct = ((valid_a["Target_Cited"] == "🔴 Omitted").sum() / len(valid_a) * 100) if has_aeo else None
+
+    has_eq = (not df_eq.empty and "Inbound_Editorial_Links" in df_eq.columns)
+    orphan_cnt = int((df_eq["Inbound_Editorial_Links"] == 0).sum()) if has_eq else 0
+
+    has_can = not df_can.empty
+    dup_pairs_cnt = len(df_can) if has_can else 0
+
+    has_ads = not df_ads.empty
+    search_ads_cnt = int(df_ads["Channel"].str.contains("Search", case=False, na=False).sum()) if (has_ads and "Channel" in df_ads.columns) else 0
+
+    sec_grade = sec_res.get("Grade", "Verified")
+    cwv_score = cwv_res.get("Score", "N/A")
+    raw_lcp = str(cwv_res.get("LCP", "N/A"))
+    da_val = crawly_data.get("domain_authority", 0)
+    ref_dom = crawly_data.get("referring_domains", 0)
+
+    kpi_cards = [
+        (f"{total_pages}", "Pages Reviewed", "#004b93"),
+        (f"{comm_schema_pct:.0f}%", "Product/FAQ Schema", "#16a34a" if comm_schema_pct >= 80 else "#dc2626"),
+        (f"{thin_cnt}/{total_pages}", "Thin Pages (<300w)", "#16a34a" if thin_cnt == 0 else "#dc2626"),
+    ]
+    if has_serp:
+        kpi_cards.append((f"{100.0 - invis_pct:.0f}%", "Google Page 1–2 Share", "#16a34a" if invis_pct <= 30 else "#dc2626"))
+    elif has_can:
+        kpi_cards.append((f"{dup_pairs_cnt}", "Duplicate Copy Pairs", "#16a34a" if dup_pairs_cnt == 0 else "#dc2626"))
     else:
-        strengths.append(f"<strong>Multi-Page Commercial Footprint ({total_pages} Pages):</strong> Independent landing URLs allow targeted keyword clustering across product divisions.")
+        kpi_cards.append((f"{missing_meta_cnt}", "Missing Meta Tags", "#16a34a" if missing_meta_cnt == 0 else "#dc2626"))
 
-    if comm_schema_pct == 100.0:
-        strengths.append("<strong>Active Schema.org Data:</strong> Organization and WebSite schemas are actively declared on the homepage.")
-        opportunities.append("<strong>Specialized Schema Deployment:</strong> Implement MedicalBusiness, DiagnosticProcedure, and FAQ schemas to capture Google Rich Snippets.")
+    if has_aeo:
+        kpi_cards.append((f"{100.0 - aeo_loss_pct:.0f}%", "AI Answer Citations", "#16a34a" if aeo_loss_pct <= 30 else "#dc2626"))
+    elif has_eq:
+        kpi_cards.append((f"{orphan_cnt}", "Unlinked Pages", "#16a34a" if orphan_cnt == 0 else "#e85122"))
     else:
-        weaknesses.append(f"<strong>Zero Commercial Structured Schemas ({100.0 - comm_schema_pct:.1f}% Missing):</strong> Basic organization tags declared, but completely devoid of MedicalBusiness or Service schemas.")
-        opportunities.append("<strong>Structured Schema Deployment:</strong> Implement Organization, Service, and FAQ schemas to capture Google Rich Snippets.")
+        kpi_cards.append((f"{avg_a11y}/100", "Accessibility Score", "#16a34a" if avg_a11y >= 85 else "#f2a900"))
 
-    if not has_llms:
-        weaknesses.append("<strong>Root llms.txt Standard Missing (404 Error):</strong> Omits machine-readable endpoint guidance required by Generative AI search crawlers.")
-        opportunities.append("<strong>Publish Structured llms.txt:</strong> Deploy standardized guidance for preferential citation in ChatGPT, Claude, and Perplexity.")
-    else:
-        strengths.append("<strong>Active AI Index (llms.txt):</strong> Serves a verified Markdown index for autonomous AI answer engines.")
+    kpi_html = "".join([
+        f'<div class="metric-box"><div class="metric-num" style="color:{col};">{esc(val)}</div><div class="metric-title">{esc(lbl)}</div></div>'
+        for val, lbl, col in kpi_cards
+    ])
 
+    whats_working = []
+    priority_fixes = []
+
+    if total_pages >= 5:
+        whats_working.append(f"<strong>Dedicated Page Structure ({total_pages} Pages):</strong> Having individual URLs for separate offerings gives search engines clear landing pages to index.")
+    if has_llms:
+        whats_working.append("<strong>AI Crawler Guide Active (<code>/llms.txt</code>):</strong> Your site publishes an <code>llms.txt</code> directory so AI tools like ChatGPT and Perplexity can read your offerings.")
+    if comm_schema_cnt > 0:
+        whats_working.append(f"<strong>Structured Data Found on {comm_schema_cnt} Page(s):</strong> Search engines can read structured business tags on {comm_schema_pct:.0f}% of the pages in this batch.")
+    if mashed_count == 0:
+        whats_working.append("<strong>Clean Page Headlines:</strong> All main headings (H1 tags) are properly spaced and easy for search engines to read.")
+    if has_ads and search_ads_cnt > 0:
+        whats_working.append(f"<strong>Active Google Search Ads ({search_ads_cnt} Text Ads):</strong> Paid search campaigns are actively defending bottom-of-funnel buyer queries.")
+    if "A" in str(sec_grade):
+        whats_working.append(f"<strong>Strong Website Security ({esc(sec_grade)}):</strong> HTTPS encryption and browser security headers are properly configured.")
+    if da_val and int(da_val) >= 35:
+        whats_working.append(f"<strong>Established Domain Authority ({da_val}/100):</strong> Backed by {ref_dom:,} referring websites.")
+
+    if is_single_or_thin:
+        priority_fixes.append(f"<strong>Expand Page Depth ({total_pages} Page(s) Reviewed):</strong> Search engines rarely rank single-page sections for multiple buyer searches. Create dedicated pages for each core service.")
+    if comm_schema_pct < 100.0:
+        unmarked = total_pages - comm_schema_cnt
+        priority_fixes.append(f"<strong>Add Product &amp; FAQ Labels to {unmarked} Page(s) ({missing_schema_pct:.0f}% Missing):</strong> Only {comm_schema_cnt} of {total_pages} pages include product/service schema. Adding structured labels helps Google display pricing, reviews, and FAQs.")
+    if thin_cnt > 0:
+        sample_thin = ", ".join([esc(urlparse(u).path or "/") for u in thin_pages_df["URL"].head(2)])
+        priority_fixes.append(f"<strong>Expand Thin Copy on {thin_cnt} Page(s) (&lt;300 Words):</strong> Pages like <code>{sample_thin}</code> have very little text, making it hard for Google or AI tools to rank them.")
+    if has_can and dup_pairs_cnt > 0:
+        priority_fixes.append(f"<strong>Consolidate {dup_pairs_cnt} Duplicate Page Pair(s):</strong> Several URLs in this batch share identical text (100% overlap), which splits ranking power. Merge duplicates or point canonical tags to one primary page.")
     if mashed_count > 0:
-        weaknesses.append(f"<strong>H1 Component Delimiter Formatting ({mashed_count} URLs):</strong> Stylized sub-elements concatenate keywords without proper spacing, hindering search indexing.")
-    else:
-        strengths.append("<strong>Clean Heading Typography:</strong> Headline text is cleanly formatted without component concatenation bugs.")
-
-    if orphan_pct > 50 or df_eq.empty:
-        weaknesses.append("<strong>High Commercial Orphan Risk:</strong> Complete absence of an editorial archive or blog silo prevents internal PageRank flow to core solutions.")
-        opportunities.append("<strong>Channel Editorial Authority:</strong> Create a clinical resource hub to earn high-authority backlinks from medical and life sciences platforms.")
-    else:
-        strengths.append("<strong>Interlinked Content Silos:</strong> Active blog and resource assets funnel link equity directly into commercial hubs.")
-
-    # Performance & Security
-    strengths.append("<strong>Decoupled Edge Infrastructure:</strong> Modern headless delivery foundation provides clean uptime and fast foundational response.")
-    strengths.append(f"<strong>Enterprise Security Baseline:</strong> {sec_grade} with Strict Transport Security (HSTS) headers and Content Security Policy (CSP) enforcement.")
-    strengths.append("<strong>Visual Stability:</strong> Cumulative Layout Shift score of 0.00 prevents visual jumps and guarantees rendering stability across devices.")
-
-    threats.append(f"<strong>Generative AI Exclusion:</strong> Competitors are winning {aeo_loss_pct:.1f}% of citations in Google AI Overviews, Perplexity, and conversational engines.")
-    threats.append("<strong>Paid Conquesting Vulnerability:</strong> Niche healthcare rivals actively capture #1 sponsored Google Ads positions on buyer keywords uncontested.")
+        mashed_urls = ", ".join([esc(urlparse(u).path or "/") for u in df_c[df_c["Concatenated_H1"]]["URL"].head(2)])
+        priority_fixes.append(f"<strong>Fix Merged Headline Words ({mashed_count} Page(s)):</strong> Styling on <code>{mashed_urls}</code> removes spaces between words in the main headline, confusing search crawlers.")
+    if has_serp and invis_pct > 40:
+        priority_fixes.append(f"<strong>Improve Non-Branded Google Visibility ({invis_pct:.0f}% Off Page 1–2):</strong> While branded terms rank well, prospective customers searching general category terms are finding competitors first.")
+    if has_aeo and aeo_loss_pct > 50:
+        priority_fixes.append(f"<strong>Win Citations in AI Answers ({aeo_loss_pct:.0f}% Omitted):</strong> Add clear, direct Q&amp;A sections at the top of these pages so Google AI Overviews and ChatGPT quote {esc(brand_display)}.")
     if "s" in raw_lcp:
-        threats.append(f"<strong>High Mobile Visual Paint Latency:</strong> Uncompressed assets cause {raw_lcp} Largest Contentful Paint (LCP), increasing bounce rates on paid and organic visitors.")
+        try:
+            if float(raw_lcp.replace("s", "").replace(",", "").strip()) > 3.0:
+                priority_fixes.append(f"<strong>Speed Up Mobile Page Load ({esc(raw_lcp)}):</strong> Compressing large hero images to WebP format will cut mobile wait times below 2.5 seconds.")
+        except Exception:
+            pass
+    if has_eq and orphan_cnt > 0:
+        priority_fixes.append(f"<strong>Connect {orphan_cnt} Unlinked Page(s):</strong> Add internal links from your main guides and blog posts to these pages so visitors and Google discover them easily.")
 
-    # Table rows (up to 4-5 rows for clean 1-page fit)
+    if not whats_working:
+        whats_working.append("<strong>Clean Technical Foundation:</strong> Pages load with HTTP 200 status and pass basic crawlability checks.")
+    if not priority_fixes:
+        priority_fixes.append("<strong>Ongoing Content &amp; FAQ Refresh:</strong> Keep service descriptions and customer FAQs updated to maintain search and AI visibility.")
+
     table_rows = ""
     if not df_c.empty:
-        for idx, r in df_c.head(5).iterrows():
-            u = r['URL']
-            h1_c = r.get('H1_Count', 1)
-            typo = "⚠️ Mashed" if r.get('Concatenated_H1') else "Clean"
-            schema_txt = "Missing (Org Only)" if r.get('Commercial_Schema') else "Missing"
-            if r.get('Commercial_Schema') and total_pages > 1:
-                schema_txt = "✓ Active"
-            
-            # Simple heuristic for assessment
-            if idx == 0 or u.rstrip('/') == target_name.rstrip('/'):
-                assess = "Homepage Landing Hub"
-            elif "about" in u:
-                assess = "Informational Authority"
-            elif "solution" in u or "product" in u:
-                assess = "Commercial Service Hub"
-            elif "contact" in u:
-                assess = "Commercial Lead Capture"
+        for idx, r in df_c.head(7).iterrows():
+            u_clean = clean_display_url(r["URL"])
+            w_cnt = int(r.get("Word_Count", 0))
+            has_comm = bool(r.get("Commercial_Schema", False))
+            is_mashed = bool(r.get("Concatenated_H1", False))
+
+            if is_mashed:
+                action_note = "Fix merged words in main headline"
+                action_color = "#dc2626"
+            elif w_cnt < 250 and not has_comm:
+                action_note = f"Expand thin copy ({w_cnt}w) &amp; add schema"
+                action_color = "#dc2626"
+            elif w_cnt < 250:
+                action_note = f"Expand thin page copy ({w_cnt} words)"
+                action_color = "#b45309"
+            elif not has_comm:
+                action_note = "Add Product/Service &amp; FAQ schema"
+                action_color = "#b45309"
             else:
-                assess = "Commercial Leaf URL"
+                action_note = "Strong baseline — add Q&amp;A block"
+                action_color = "#16a34a"
 
-            table_rows += f"""<tr>
-                <td style="font-family:monospace; font-size:6.7pt; word-break:break-all;">{u}</td>
-                <td style="text-align:center;">{h1_c}</td>
-                <td style="text-align:center; color:{'#dc2626' if typo != 'Clean' else '#16a34a'}; font-weight:bold;">{typo}</td>
-                <td style="text-align:center; color:{'#16a34a' if 'Active' in schema_txt else '#dc2626'}; font-weight:bold;">{schema_txt}</td>
-                <td>{assess}</td>
-            </tr>"""
-    else:
-        table_rows = f"""<tr>
-            <td style="font-family:monospace; font-size:6.7pt;">{target_name}</td>
-            <td style="text-align:center;">1</td>
-            <td style="text-align:center; color:#16a34a; font-weight:bold;">Clean</td>
-            <td style="text-align:center; color:#dc2626; font-weight:bold;">Missing (Org Only)</td>
-            <td>Homepage Landing Hub</td>
-        </tr>"""
+            table_rows += f'''<tr>
+                <td style="font-family:monospace; font-size:6.4pt; word-break:break-all;">{esc(u_clean)}</td>
+                <td style="text-align:center;">{w_cnt:,}</td>
+                <td style="text-align:center; color:{'#16a34a' if has_comm else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_comm else 'Missing'}</td>
+                <td style="color:{action_color}; font-weight:bold;">{action_note}</td>
+            </tr>'''
 
-    w_items = "".join([f"<li>{x}</li>" for x in weaknesses[:5]])
-    o_items = "".join([f"<li>{x}</li>" for x in opportunities[:5]])
-    s_items = "".join([f"<li>{x}</li>" for x in strengths[:4]])
-    t_items = "".join([f"<li>{x}</li>" for x in threats[:4]])
+    w_list_html = "".join([f"<li>{x}</li>" for x in whats_working[:4]])
+    f_list_html = "".join([f"<li>{x}</li>" for x in priority_fixes[:5]])
 
-    html_1page = f"""<!DOCTYPE html>
+    meta_extras = []
+    if da_val:
+        meta_extras.append(f"<span><strong>Domain Authority:</strong> {da_val}/100</span>")
+    if cwv_score != "N/A":
+        meta_extras.append(f"<span><strong>Mobile Speed:</strong> {esc(cwv_score)}/100</span>")
+    meta_extras.append(f"<span><strong>Accessibility:</strong> {avg_a11y}/100</span>")
+    meta_extras.append(f"<span><strong>AI Guide (llms.txt):</strong> {'Active' if has_llms else 'Missing'}</span>")
+
+    html_1p = f'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
     @page {{
         size: letter portrait;
-        margin: 0.36in 0.40in;
+        margin: 0.38in 0.42in;
         @bottom-left {{
-            content: "CONFIDENTIAL — Strategic Forensic Advisory Deliverable | Prepared by Connext Global Solutions";
+            content: "Prepared by Connext Global Solutions — Digital Strategy & Search Advisory";
             font-size: 6.2pt;
             color: #64748b;
             font-family: 'DejaVu Sans', sans-serif;
@@ -3021,21 +3166,19 @@ def build_executive_summary_1page_html(
             font-weight: bold;
         }}
     }}
-    * {{
-        box-sizing: border-box;
-    }}
+    * {{ box-sizing: border-box; }}
     body {{
         font-family: 'DejaVu Sans', sans-serif;
         color: #1e293b;
-        font-size: 7.2pt;
-        line-height: 1.34;
+        font-size: 7.3pt;
+        line-height: 1.38;
         margin: 0;
         padding: 0;
     }}
     .header {{
         border-bottom: 2.5px solid #004b93;
-        padding-bottom: 5px;
-        margin-bottom: 6px;
+        padding-bottom: 6px;
+        margin-bottom: 7px;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -3049,48 +3192,47 @@ def build_executive_summary_1page_html(
     }}
     .subtitle {{
         color: #e85122;
-        font-size: 8pt;
+        font-size: 8.2pt;
         font-weight: bold;
-        margin-top: 1px;
+        margin-top: 2px;
     }}
     .meta-bar {{
         background: #f1f5f9;
         border: 1px solid #cbd5e1;
-        padding: 4px 8px;
+        padding: 5px 9px;
         border-radius: 3px;
         font-size: 6.8pt;
-        margin-bottom: 7px;
+        margin-bottom: 8px;
         display: flex;
         justify-content: space-between;
         flex-wrap: wrap;
+        gap: 6px;
     }}
     .metric-row {{
         display: flex;
         gap: 6px;
-        margin-bottom: 7px;
+        margin-bottom: 9px;
     }}
     .metric-box {{
         flex: 1;
         background: #f8fafc;
         border: 1px solid #e2e8f0;
         border-top: 2.5px solid #004b93;
-        padding: 6px 2px;
+        padding: 7px 3px;
         text-align: center;
         border-radius: 3px;
     }}
     .metric-num {{
         font-size: 13pt;
         font-weight: bold;
-        color: #0f172a;
         line-height: 1.1;
     }}
     .metric-title {{
-        font-size: 5.6pt;
+        font-size: 5.7pt;
         color: #64748b;
         font-weight: bold;
         text-transform: uppercase;
-        margin-top: 2px;
-        line-height: 1.15;
+        margin-top: 3px;
     }}
     .section-title {{
         color: #004b93;
@@ -3098,133 +3240,96 @@ def build_executive_summary_1page_html(
         font-weight: bold;
         text-transform: uppercase;
         letter-spacing: 0.3px;
-        margin: 6px 0 4px 0;
+        margin: 7px 0 5px 0;
         padding-bottom: 2px;
         border-bottom: 1.5px solid #004b93;
     }}
-    .swot-grid {{
+    .two-col {{
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 6px;
-        margin-bottom: 6px;
+        gap: 8px;
+        margin-bottom: 8px;
     }}
-    .swot-cell {{
+    .panel {{
         border: 1px solid #e2e8f0;
-        padding: 5px 7px;
-        border-radius: 3px;
-        font-size: 6.6pt;
-        line-height: 1.3;
+        padding: 7px 9px;
+        border-radius: 4px;
+        font-size: 6.8pt;
+        line-height: 1.38;
     }}
-    .swot-w {{ border-top: 2.5px solid #dc2626; background: #fffcfc; }}
-    .swot-o {{ border-top: 2.5px solid #16a34a; background: #fcfdfc; }}
-    .swot-s {{ border-top: 2.5px solid #004b93; background: #fbfdff; }}
-    .swot-t {{ border-top: 2.5px solid #f2a900; background: #fffefa; }}
-    .swot-header {{
-        font-size: 7.2pt;
+    .panel-good {{ border-top: 3px solid #16a34a; background: #fcfefd; }}
+    .panel-fix {{ border-top: 3px solid #dc2626; background: #fffdfd; }}
+    .panel-head {{
+        font-size: 7.5pt;
         font-weight: bold;
-        margin-bottom: 3px;
+        margin-bottom: 4px;
     }}
-    ul {{
-        margin: 0;
-        padding-left: 12px;
-    }}
-    li {{
-        margin-bottom: 2px;
-    }}
+    ul {{ margin: 0; padding-left: 13px; }}
+    li {{ margin-bottom: 3px; }}
     table {{
         width: 100%;
         border-collapse: collapse;
-        font-size: 6.6pt;
-        margin-top: 3px;
+        font-size: 6.7pt;
+        margin-top: 4px;
     }}
+    thead {{ display: table-header-group; }}
+    tr {{ page-break-inside: avoid; break-inside: avoid; }}
     th {{
         background: #004b93;
         color: white;
-        padding: 3.5px 5px;
+        padding: 4px 5px;
         text-align: left;
         font-weight: bold;
         border: 1px solid #003a73;
     }}
     td {{
-        padding: 3px 5px;
+        padding: 3.5px 5px;
         border: 1px solid #e2e8f0;
     }}
-    tr:nth-child(even) td {{
-        background: #f8fafc;
-    }}
+    tr:nth-child(even) td {{ background: #f8fafc; }}
 </style>
 </head>
 <body>
     <div class="header">
         <div>
-            <div class="title">Connext Global Solutions — Enterprise Digital Audit</div>
-            <div class="subtitle">Executive Architecture, Schema, AEO & Search Benchmark</div>
+            <div class="title">{esc(brand_display)} — Page Performance &amp; Search Brief</div>
+            <div class="subtitle">{esc(scope_title)}</div>
         </div>
         <div>
-            <img src="{logo_url}" style="width: 110px;">
+            <img src="{logo_url}" style="width: 112px;">
         </div>
     </div>
 
     <div class="meta-bar">
-        <span><strong>Audited Entity:</strong> {target_name}</span>
-        <span><strong>llms.txt:</strong> {'Active (200)' if has_llms else 'Missing (404 Error)'}</span>
-        <span><strong>Security:</strong> {sec_grade}</span>
-        <span><strong>Mobile Speed:</strong> {cwv_score}/100</span>
-        <span><strong>Accessibility:</strong> {avg_a11y}/100</span>
+        <span><strong>Website:</strong> {esc(clean_host)}</span>
+        <span><strong>Date:</strong> {datetime.now().strftime("%B %d, %Y")}</span>
+        {''.join(meta_extras)}
     </div>
 
     <div class="metric-row">
-        <div class="metric-box">
-            <div class="metric-num">{total_pages}</div>
-            <div class="metric-title">Pages Audited</div>
+        {kpi_html}
+    </div>
+
+    <div class="section-title">Executive Findings for This Page Group</div>
+    <div class="two-col">
+        <div class="panel panel-good">
+            <div class="panel-head" style="color:#16a34a;">WHAT IS WORKING WELL</div>
+            <ul>{w_list_html}</ul>
         </div>
-        <div class="metric-box">
-            <div class="metric-num" style="color:{'#dc2626' if comm_schema_pct < 50 else '#16a34a'};">{100.0 - comm_schema_pct:.1f}%</div>
-            <div class="metric-title">Commercial Schemas Missing</div>
-        </div>
-        <div class="metric-box">
-            <div class="metric-num" style="color:{'#dc2626' if invis_pct > 50 else '#16a34a'};">{invis_pct:.1f}%</div>
-            <div class="metric-title">SERP Invisibility Rate</div>
-        </div>
-        <div class="metric-box">
-            <div class="metric-num" style="color:{'#dc2626' if aeo_loss_pct > 50 else '#16a34a'};">{aeo_loss_pct:.1f}%</div>
-            <div class="metric-title">AEO Competitor Wins</div>
-        </div>
-        <div class="metric-box">
-            <div class="metric-num" style="color:{'#dc2626' if orphan_pct > 50 else '#0f172a'};">{orphan_pct:.1f}%</div>
-            <div class="metric-title">Orphaned Offerings (Flat Arch)</div>
+        <div class="panel panel-fix">
+            <div class="panel-head" style="color:#dc2626;">PRIORITY IMPROVEMENTS NEEDED</div>
+            <ul>{f_list_html}</ul>
         </div>
     </div>
 
-    <div class="section-title">Brand SWOT Strategic Evaluation</div>
-    <div class="swot-grid">
-        <div class="swot-cell swot-w">
-            <div class="swot-header" style="color:#dc2626;">WEAKNESSES</div>
-            <ul>{w_items}</ul>
-        </div>
-        <div class="swot-cell swot-o">
-            <div class="swot-header" style="color:#16a34a;">OPPORTUNITIES</div>
-            <ul>{o_items}</ul>
-        </div>
-        <div class="swot-cell swot-s">
-            <div class="swot-header" style="color:#004b93;">STRENGTHS</div>
-            <ul>{s_items}</ul>
-        </div>
-        <div class="swot-cell swot-t">
-            <div class="swot-header" style="color:#b45309;">THREATS</div>
-            <ul>{t_items}</ul>
-        </div>
-    </div>
-
-    <div class="section-title">Commercial Architecture Crawl & Page Inventory</div>
+    <div class="section-title">Page-by-Page Audit &amp; Recommended Next Step</div>
     <table>
         <thead>
             <tr>
-                <th style="width:42%;">Crawled Commercial URL</th>
-                <th style="width:10%; text-align:center;">H1 Count</th>
-                <th style="width:14%; text-align:center;">Typography</th>
-                <th style="width:18%; text-align:center;">Commercial Schema</th>
-                <th style="width:16%;">Status Assessment</th>
+                <th style="width:45%;">Audited Page URL</th>
+                <th style="width:11%; text-align:center;">Words</th>
+                <th style="width:13%; text-align:center;">Schema</th>
+                <th style="width:31%;">Recommended Action for This Page</th>
             </tr>
         </thead>
         <tbody>
@@ -3232,23 +3337,49 @@ def build_executive_summary_1page_html(
         </tbody>
     </table>
 </body>
-</html>"""
+</html>'''
+    return weasyprint.HTML(string=html_1p).write_pdf()
 
-    return weasyprint.HTML(string=html_1page).write_pdf()
 
 def build_executive_dossier_html(
-    df_c, df_r, df_a, df_eq, df_can, df_ads, 
-    cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot, 
-    target_name, has_llms, logo_url
+    df_c, df_r, df_a, df_eq, df_can, df_ads,
+    cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot,
+    target_name, has_llms, logo_url, crawly_data=None,
+    section_label="", client_name=""
 ):
+    crawly_data = crawly_data or {}
     total_pages = len(df_c) if not df_c.empty else 0
-    is_thin = (total_pages <= 2)
-    comm_schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0
-    invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 0
-    aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 0
-    avg_a11y = round(df_c["A11y_Score"].mean()) if not df_c.empty and "A11y_Score" in df_c.columns else 85
-    mashed_count = int(df_c["Concatenated_H1"].sum()) if not df_c.empty else 0
-    
+    is_single_or_thin = (total_pages <= 2)
+    clean_host = urlparse(target_name).netloc.replace("www.", "") or target_name
+    brand_display = client_name.strip() if client_name and client_name.strip() else clean_host.split(".")[0].title()
+    scope_title = detect_audit_scope_label(df_c, target_name, section_label)
+
+    comm_schema_cnt = int(df_c["Commercial_Schema"].sum()) if (not df_c.empty and "Commercial_Schema" in df_c.columns) else 0
+    comm_schema_pct = (comm_schema_cnt / total_pages * 100) if total_pages > 0 else 0.0
+    missing_schema_pct = max(0.0, 100.0 - comm_schema_pct)
+
+    thin_pages_df = df_c[df_c["Word_Count"] < 300] if (not df_c.empty and "Word_Count" in df_c.columns) else pd.DataFrame()
+    thin_cnt = len(thin_pages_df)
+    missing_meta_cnt = int(((df_c["Meta_Title_Status"] == "Missing") | (df_c["Meta_Desc_Status"] == "Missing")).sum()) if (not df_c.empty and "Meta_Title_Status" in df_c.columns) else 0
+    mashed_count = int(df_c["Concatenated_H1"].sum()) if (not df_c.empty and "Concatenated_H1" in df_c.columns) else 0
+    avg_a11y = round(df_c["A11y_Score"].mean()) if (not df_c.empty and "A11y_Score" in df_c.columns) else 80
+    avg_aeo_ready = round(df_c["AEO_Readiness_Score"].mean()) if (not df_c.empty and "AEO_Readiness_Score" in df_c.columns) else 50
+
+    valid_r = df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout|Skipped", case=False, na=False)] if not df_r.empty else pd.DataFrame()
+    has_serp = not valid_r.empty
+    invis_pct = ((valid_r["Target_Rank"] == "> 20 (Absent)").sum() / len(valid_r) * 100) if has_serp else 0.0
+
+    valid_a = df_a[~df_a["Target_Cited"].astype(str).str.contains("Error|Timeout|Skipped", case=False, na=False)] if not df_a.empty else pd.DataFrame()
+    has_aeo = not valid_a.empty
+    aeo_loss_pct = ((valid_a["Target_Cited"] == "🔴 Omitted").sum() / len(valid_a) * 100) if has_aeo else 0.0
+
+    has_eq = (not df_eq.empty and "Inbound_Editorial_Links" in df_eq.columns)
+    has_can = not df_can.empty
+    dup_pairs_cnt = len(df_can) if has_can else 0
+
+    has_ads = not df_ads.empty
+    search_ads_cnt = int(df_ads["Channel"].str.contains("Search", case=False, na=False).sum()) if (has_ads and "Channel" in df_ads.columns) else 0
+
     raw_tbt = str(cwv_res.get("TBT", "N/A"))
     tbt_numeric = 0
     tbt_digits = "".join([c for c in raw_tbt.split(".")[0] if c.isdigit()])
@@ -3256,738 +3387,333 @@ def build_executive_dossier_html(
         tbt_numeric = int(tbt_digits)
     tbt_is_good = (tbt_numeric > 0 and tbt_numeric <= 300)
 
-    cwv_score = 68
-    try:
-        cwv_score = int(cwv_res.get("Score", 68))
-    except Exception:
-        cwv_score = 68
+    raw_lcp = str(cwv_res.get("LCP", "N/A"))
+    lcp_numeric = 0.0
+    if "s" in raw_lcp and "ms" not in raw_lcp:
+        try:
+            lcp_numeric = float(raw_lcp.replace("s", "").replace(",", "").strip())
+        except Exception:
+            lcp_numeric = 0.0
 
-    sec_grade = sec_res.get("Grade", "B (Adequate)")
+    has_cwv = bool(cwv_res and cwv_res.get("Score") not in (None, "N/A", ""))
+    cwv_score = int(cwv_res.get("Score", 68)) if has_cwv else 68
+    sec_grade = sec_res.get("Grade", "Verified")
+    da_val = crawly_data.get("domain_authority", 0)
+    ref_dom = crawly_data.get("referring_domains", 0)
 
-    base_seo = max(10, round(100 - (invis_pct * 0.7 + (mashed_count / max(1, total_pages) * 30))))
-    score_seo = min(base_seo, 25) if is_thin else base_seo
+    base_seo = max(10, round(100 - ((invis_pct * 0.55 if has_serp else 20) + (thin_cnt / max(1, total_pages) * 25) + (missing_meta_cnt / max(1, total_pages) * 20))))
+    score_seo = min(base_seo, 25) if is_single_or_thin else base_seo
     score_schema = round(comm_schema_pct)
-    score_aeo = min(max(5, round(100 - aeo_loss_pct)), 30 if is_thin else 100)
-    score_sec = 95 if "A" in sec_grade else (75 if "B" in sec_grade else 45)
+    score_aeo = round((100 - aeo_loss_pct) * 0.6 + avg_aeo_ready * 0.4) if has_aeo else avg_aeo_ready
+    if is_single_or_thin:
+        score_aeo = min(score_aeo, 30)
+    score_sec = 95 if "A" in str(sec_grade) else (75 if "B" in str(sec_grade) else 50)
 
     def badge_color(score):
         return "#16a34a" if score >= 85 else ("#f2a900" if score >= 50 else "#dc2626")
 
     crawl_rows = ""
     if not df_c.empty:
-        for _, r in df_c.head(15).iterrows():
-            crawl_rows += f"""<tr>
-                <td style="word-break:break-all; font-size:7.2pt; font-family:monospace;">{r['URL']}</td>
-                <td style="text-align:center;">{r.get('H1_Count', 0)}</td>
-                <td style="text-align:center; color:{'#dc2626' if r.get('Concatenated_H1') else '#16a34a'}; font-weight:bold;">{'⚠️ Mashed' if r.get('Concatenated_H1') else '✓ Clean'}</td>
-                <td style="text-align:center; color:{'#16a34a' if r.get('Commercial_Schema') else '#dc2626'}; font-weight:bold;">{'✓ Declared' if r.get('Commercial_Schema') else '🔴 Missing'}</td>
-                <td style="text-align:center; font-weight:bold;">{r.get('A11y_Score', 100)}</td>
-                <td style="text-align:center;">{r.get('Word_Count', 0)}</td>
-            </tr>"""
+        for _, r in df_c.head(16).iterrows():
+            u_clean = clean_display_url(r["URL"])
+            w_cnt = int(r.get("Word_Count", 0))
+            has_comm = bool(r.get("Commercial_Schema", False))
+            is_mashed = bool(r.get("Concatenated_H1", False))
+            m_title_ok = (r.get("Meta_Title_Status", "") not in ("Missing", "Too Short (<30)"))
+            m_desc_ok = (r.get("Meta_Desc_Status", "") not in ("Missing", "Too Short (<120)"))
+            meta_lbl = "✓ Complete" if (m_title_ok and m_desc_ok) else ("Partial" if (m_title_ok or m_desc_ok) else "Missing")
+            crawl_rows += f'''<tr>
+                <td style="word-break:break-all; font-size:6.8pt; font-family:monospace;">{esc(u_clean)}</td>
+                <td style="text-align:center;">{w_cnt:,}</td>
+                <td style="text-align:center; color:{'#16a34a' if meta_lbl == '✓ Complete' else '#b45309'}; font-weight:bold;">{meta_lbl}</td>
+                <td style="text-align:center; color:{'#dc2626' if is_mashed else '#16a34a'}; font-weight:bold;">{'Merged Words' if is_mashed else '✓ Clean'}</td>
+                <td style="text-align:center; color:{'#16a34a' if has_comm else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_comm else 'Missing'}</td>
+                <td style="text-align:center;">{int(r.get('A11y_Score', 80))}/100</td>
+            </tr>'''
 
     equity_rows = ""
-    if not df_eq.empty:
-        for _, r in df_eq.head(12).iterrows():
-            u = r.get('Target_Commercial_URL', r.get('URL', ''))
-            cnt = r.get('Inbound_Editorial_Links', r.get('Peer_Cross_Links', 0))
-            anch = r.get('Sample_Anchor_Texts', r.get('Cross_Link_Anchors', 'None'))
-            st_text = r.get('Equity_Status', r.get('Mesh_Status', 'N/A'))
-            equity_rows += f"""<tr>
-                <td style="word-break:break-all; font-size:7.2pt; font-family:monospace;">{u}</td>
+    if has_eq:
+        for _, r in df_eq.head(10).iterrows():
+            u_clean = clean_display_url(r.get("Target_Commercial_URL", r.get("URL", "")))
+            cnt = int(r.get("Inbound_Editorial_Links", r.get("Peer_Cross_Links", 0)))
+            anch = str(r.get("Sample_Anchor_Texts", r.get("Cross_Link_Anchors", "None")))[:65]
+            st_text = "Well Linked" if cnt >= 2 else ("Needs More Links (1)" if cnt == 1 else "Unlinked (0 Links)")
+            st_col = "#16a34a" if cnt >= 2 else ("#b45309" if cnt == 1 else "#dc2626")
+            equity_rows += f'''<tr>
+                <td style="word-break:break-all; font-size:6.8pt; font-family:monospace;">{esc(u_clean)}</td>
                 <td style="text-align:center; font-weight:bold;">{cnt}</td>
-                <td style="font-size:7pt;">{anch}</td>
-                <td style="text-align:center; font-weight:bold;">{st_text}</td>
-            </tr>"""
+                <td style="font-size:6.8pt;">{esc(anch)}</td>
+                <td style="text-align:center; font-weight:bold; color:{st_col};">{st_text}</td>
+            </tr>'''
 
     can_rows = ""
-    if not df_can.empty:
-        for _, r in df_can.head(8).iterrows():
-            can_rows += f"""<tr>
-                <td style="word-break:break-all; font-size:7.2pt; font-family:monospace;">{r['URL_1']}</td>
-                <td style="word-break:break-all; font-size:7.2pt; font-family:monospace;">{r['URL_2']}</td>
-                <td style="text-align:center; font-weight:bold; color:#dc2626;">{r['Cosine_Similarity']}</td>
-                <td style="text-align:center;">{r['Severity']}</td>
-            </tr>"""
+    if has_can:
+        for _, r in df_can.head(7).iterrows():
+            u1 = clean_display_url(r["URL_1"])
+            u2 = clean_display_url(r["URL_2"])
+            sim_val = r["Cosine_Similarity"]
+            can_rows += f'''<tr>
+                <td style="word-break:break-all; font-size:6.7pt; font-family:monospace;">{esc(u1)}</td>
+                <td style="word-break:break-all; font-size:6.7pt; font-family:monospace;">{esc(u2)}</td>
+                <td style="text-align:center; font-weight:bold; color:#dc2626;">{int(float(sim_val)*100)}% Match</td>
+                <td style="text-align:center;">Consolidate / Canonicalize</td>
+            </tr>'''
 
     serp_rows = ""
-    if not df_r.empty:
-        for _, r in df_r.head(12).iterrows():
-            serp_rows += f"""<tr>
-                <td style="font-weight:bold;">{r['Keyword']}</td>
-                <td style="text-align:center; font-weight:bold; color:{'#16a34a' if '#' in str(r['Target_Rank']) else '#dc2626'};">{r['Target_Rank']}</td>
-                <td style="word-break:break-all; font-size:7pt; font-family:monospace;">{r['Ranking_URL']}</td>
-                <td style="text-align:center; font-weight:bold;">{r['Top_Ranking_Competitor']}</td>
-            </tr>"""
+    if has_serp:
+        for _, r in valid_r.head(12).iterrows():
+            rk = str(r["Target_Rank"])
+            r_url = clean_display_url(r["Ranking_URL"])
+            comp = esc(str(r["Top_Ranking_Competitor"]))
+            is_vis = rk.startswith("#")
+            serp_rows += f'''<tr>
+                <td style="font-weight:bold;">{esc(r['Keyword'])}</td>
+                <td style="text-align:center; font-weight:bold; color:{'#16a34a' if is_vis else '#dc2626'};">{esc(rk)}</td>
+                <td style="word-break:break-all; font-size:6.7pt; font-family:monospace;">{esc(r_url)}</td>
+                <td style="text-align:center;">{comp}</td>
+            </tr>'''
 
     aeo_rows = ""
-    if not df_a.empty:
-        for _, r in df_a.head(10).iterrows():
-            aeo_rows += f"""<tr>
-                <td>{r['Buyer_Query']}</td>
-                <td style="text-align:center;">{r['AI_Overview_Generated']}</td>
-                <td style="text-align:center; font-weight:bold; color:{'#16a34a' if 'Yes' in str(r['Target_Cited']) else '#dc2626'};">{r['Target_Cited']}</td>
-                <td style="font-size:7pt;">{r['Cited_Competitors']}</td>
-            </tr>"""
+    if has_aeo:
+        for _, r in valid_a.head(10).iterrows():
+            cited_flag = "Yes" in str(r["Target_Cited"])
+            sources_txt = str(r.get("Cited_Competitors", "None"))
+            if sources_txt in ("None", "N/A", ""):
+                sources_txt = "AI Overview Summary (No External Links)"
+            aeo_rows += f'''<tr>
+                <td>{esc(r['Buyer_Query'])}</td>
+                <td style="text-align:center;">{esc(r['AI_Overview_Generated'])}</td>
+                <td style="text-align:center; font-weight:bold; color:{'#16a34a' if cited_flag else '#dc2626'};">{'✓ Cited' if cited_flag else 'Not Cited'}</td>
+                <td style="font-size:6.8pt;">{esc(sources_txt)}</td>
+            </tr>'''
 
     ads_rows = ""
-    if not df_ads.empty:
-        for _, r in df_ads.head(8).iterrows():
-            ch_lbl = r.get('Channel', r.get('Type', 'Search Text Ad'))
-            days_lbl = f"{r.get('Days_Active', 1)} Days ({r.get('First_Shown', 'N/A')} to {r.get('Last_Shown', 'N/A')})"
-            tier_lbl = r.get('Longevity_Tier', 'Active Creative')
-            takeaway_lbl = r.get('Strategic_Takeaway', f"Advertiser: {r.get('Advertiser', 'Verified')}")
-            ads_rows += f"""<tr>
-                <td style="font-weight:bold;">{ch_lbl}</td>
-                <td>{days_lbl}</td>
-                <td style="font-weight:bold; color:{'#16a34a' if 'Evergreen' in str(tier_lbl) else '#004b93'};">{tier_lbl}</td>
-                <td style="font-size:6.8pt;">{takeaway_lbl}</td>
-            </tr>"""
+    if has_ads:
+        grouped_ads = {}
+        for _, r in df_ads.iterrows():
+            ch_lbl = str(r.get("Channel", r.get("Type", "Google Search Text Ad"))).replace("🔍 ", "").replace("🖼️ ", "").replace("🎬 ", "")
+            f_dt = str(r.get("First_Shown", "N/A"))
+            l_dt = str(r.get("Last_Shown", "N/A"))
+            days_v = int(r.get("Days_Active", 1))
+            tier_lbl = str(r.get("Longevity_Tier", "Active Ad")).replace("🔥 ", "").replace("🟢 ", "").replace("🧪 ", "")
+            key = (ch_lbl, f_dt, l_dt, days_v, tier_lbl)
+            grouped_ads[key] = grouped_ads.get(key, 0) + 1
 
+        for (ch_lbl, f_dt, l_dt, days_v, tier_lbl), count_ads in list(grouped_ads.items())[:8]:
+            count_prefix = f"{count_ads}x " if count_ads > 1 else "1x "
+            takeaway = (
+                f"Long-running control ad ({days_v} days active) — indicates consistent conversion performance."
+                if days_v >= 60 else f"Recent creative test ({days_v} days active)."
+            )
+            ads_rows += f'''<tr>
+                <td style="font-weight:bold;">{esc(count_prefix + ch_lbl)}</td>
+                <td>{days_v} Days ({esc(f_dt)} to {esc(l_dt)})</td>
+                <td style="font-weight:bold; color:{'#16a34a' if days_v >= 60 else '#004b93'};">{esc(tier_lbl)}</td>
+                <td style="font-size:6.8pt;">{esc(takeaway)}</td>
+            </tr>'''
+
+    strengths = []
     weaknesses = []
     opportunities = []
-    strengths = []
     threats = []
+    roadmap = []
 
-    if is_thin:
-        weaknesses.append(f"<strong>Single-Page Architecture ({total_pages} page(s) found):</strong> Operating on a single page prevents search engines from indexing individual clinical services.")
-        opportunities.append("<strong>Site Hierarchy Expansion:</strong> Build dedicated solution pages (/pediatrics, /oncology, /carrier-screening) to capture commercial search traffic.")
-        threats.append(f"<strong>Competitor Monopoly:</strong> Established rivals with 20+ structured solution pages capture 100% of organic search clicks in this space.")
+    if total_pages >= 5:
+        strengths.append(f"<strong>Dedicated Page Structure ({total_pages} Pages):</strong> Separate URLs allow each service or topic to be indexed independently.")
     else:
-        strengths.append(f"<strong>Multi-Page Solution Architecture ({total_pages} URLs crawled):</strong> Provides independent landing pages for granular keyword targeting.")
+        weaknesses.append(f"<strong>Limited Page Count ({total_pages} Page(s)):</strong> A small page footprint limits how many distinct search queries the site can rank for.")
+        opportunities.append("<strong>Build Dedicated Service Pages:</strong> Create separate landing pages for each core offering and buyer question.")
+        roadmap.append(("Priority 1 (High Impact)", "Expand Page Architecture", f"Add dedicated URLs for each core service beyond the {total_pages} page(s) reviewed.", "Allows Google to rank individual services separately"))
 
-    if comm_schema_pct == 100.0:
-        strengths.append("<strong>Active Schema.org Structured Data:</strong> Organization and WebSite schemas are actively declared on the homepage.")
-        opportunities.append("<strong>Deploy Specialized Clinical Schemas:</strong> Expand structured data to include MedicalBusiness, DiagnosticProcedure, and FAQPage schemas.")
+    if comm_schema_pct >= 80:
+        strengths.append(f"<strong>Strong Structured Data Coverage ({comm_schema_pct:.0f}%):</strong> Most pages include product, service, or FAQ schema labels.")
     elif comm_schema_pct > 0:
-        weaknesses.append(f"<strong>Incomplete Schema Coverage ({comm_schema_pct:.1f}%):</strong> Several pages lack structured business data.")
-        opportunities.append("<strong>Standardize Schema.org JSON-LD:</strong> Deploy MedicalBusiness and Service schemas across 100% of commercial URLs.")
+        weaknesses.append(f"<strong>Partial Schema Coverage ({comm_schema_pct:.0f}% Declared / {missing_schema_pct:.0f}% Missing):</strong> Only {comm_schema_cnt} of {total_pages} pages include product, service, or FAQ structured data.")
+        opportunities.append("<strong>Complete Schema Rollout:</strong> Add Product, Service, and FAQPage JSON-LD tags to the remaining unmarked pages.")
+        roadmap.append(("Priority 1 (High Impact)", "Add Product & FAQ Structured Data", f"Add Product/Service and FAQPage schema to the {total_pages - comm_schema_cnt} unmarked pages in this batch.", "Improves search appearance and AI answer eligibility"))
     else:
-        weaknesses.append("<strong>Zero Commercial Structured Schemas (0.0%):</strong> Search engines treat solutions as plain text without machine-readable business definitions.")
-        opportunities.append("<strong>Deploy Schema.org JSON-LD:</strong> Qualify for rich interactive search results by deploying structured schemas.")
+        weaknesses.append(f"<strong>Missing Product &amp; FAQ Schema (0 of {total_pages} Pages):</strong> Pages lack structured labels telling Google and AI tools what is being offered.")
+        opportunities.append("<strong>Deploy Product, Service &amp; FAQ Schema:</strong> Add structured JSON-LD tags so search engines clearly understand your offerings.")
+        roadmap.append(("Priority 1 (High Impact)", "Deploy Product & FAQ Structured Data", "Add Product, Service, and FAQPage JSON-LD tags across all audited pages.", "Helps Google and AI tools extract accurate service details"))
+
+    if thin_cnt > 0:
+        sample_thin_list = ", ".join([esc(urlparse(u).path or "/") for u in thin_pages_df["URL"].head(2)])
+        weaknesses.append(f"<strong>Thin Content on {thin_cnt} Page(s) (&lt;300 Words):</strong> Pages such as <code>{sample_thin_list}</code> lack sufficient explanatory text to rank competitively.")
+        opportunities.append("<strong>Enrich Thin Page Copy:</strong> Expand short pages to 500+ words with clear benefits, process steps, and buyer FAQs.")
+        roadmap.append(("Priority 1 (High Impact)", "Expand Thin Page Copy", f"Add helpful descriptions, specifications, and FAQs to the {thin_cnt} pages under 300 words.", "Improves keyword relevance and organic rankings"))
+
+    if has_can and dup_pairs_cnt > 0:
+        weaknesses.append(f"<strong>Duplicate Page Copy ({dup_pairs_cnt} High-Overlap Pair(s)):</strong> Multiple URLs share near-identical text, causing them to compete against each other in Google.")
+        opportunities.append("<strong>Consolidate Duplicate Variants:</strong> Use canonical tags or combine near-identical product variations into unified pages.")
+        roadmap.append(("Priority 1 (High Impact)", "Resolve Duplicate Page Copy", f"Consolidate or set canonical tags across the {dup_pairs_cnt} duplicate URL pairs identified.", "Concentrates ranking authority onto primary pages"))
+
+    if mashed_count > 0:
+        mashed_sample = ", ".join([esc(urlparse(u).path or "/") for u in df_c[df_c["Concatenated_H1"]]["URL"].head(2)])
+        weaknesses.append(f"<strong>Merged Headline Words ({mashed_count} Page(s)):</strong> Styling on <code>{mashed_sample}</code> joins words without spaces inside the main H1 headline.")
+        roadmap.append(("Priority 1 (Quick Fix)", "Fix H1 Headline Spacing", f"Add spaces between styled text spans in the H1 template on {mashed_count} page(s).", "Ensures Google reads headline keywords cleanly"))
+    else:
+        strengths.append("<strong>Clean Page Headlines:</strong> All main H1 headings are properly spaced and readable.")
 
     if has_llms:
-        strengths.append("<strong>Active Machine-Readable AI Index (llms.txt):</strong> Serves a verified Markdown index for autonomous AI engines.")
+        strengths.append("<strong>AI Directory Published (<code>/llms.txt</code>):</strong> Active <code>llms.txt</code> file helps ChatGPT and Perplexity index your offerings.")
     else:
-        weaknesses.append("<strong>Missing Machine-Readable AI Index (llms.txt Returns 404):</strong> AI engines (ChatGPT, Perplexity, Claude) cannot efficiently ingest your product offerings.")
-        opportunities.append("<strong>Publish Root llms.txt:</strong> Deploy the generated llms.txt file to the server root to guide generative AI crawlers.")
+        weaknesses.append("<strong>Missing <code>/llms.txt</code> File:</strong> Publishing a plain-text <code>llms.txt</code> guide helps AI search engines discover your key pages.")
+        opportunities.append("<strong>Publish <code>/llms.txt</code> at Domain Root:</strong> Upload the generated <code>llms.txt</code> file from Tab 1.")
 
-    if mashed_count > 0:
-        weaknesses.append(f"<strong>Heading Typography Concatenation ({mashed_count} page(s)):</strong> Template styling concatenates words without spaces, damaging keyword indexing.")
+    if has_serp and invis_pct > 40:
+        weaknesses.append(f"<strong>Low Non-Branded Google Visibility ({invis_pct:.0f}% Off Page 1–2):</strong> Buyers searching general industry terms frequently see competitors before {esc(brand_display)}.")
+        threats.append(f"<strong>Competitors Capturing Non-Branded Searches:</strong> Rivals rank ahead on {invis_pct:.0f}% of the commercial queries tested.")
+
+    if has_aeo and aeo_loss_pct > 50:
+        threats.append(f"<strong>Low AI Overview Citation Rate ({aeo_loss_pct:.0f}% Omitted):</strong> Conversational AI answers rarely cite {esc(brand_display)} directly.")
+        opportunities.append("<strong>Add Direct Q&amp;A Sections:</strong> Place concise 40-word answers to common buyer questions on key pages to earn AI citations.")
+        roadmap.append(("Priority 2 (Growth)", "Add Direct Buyer Q&A Blocks", "Open key service pages with a clear summary definition and 3–5 answered FAQs.", "Increases brand citations in Google AI Overviews & ChatGPT"))
+
+    if has_ads and search_ads_cnt > 0:
+        strengths.append(f"<strong>Active Google Search Ads ({search_ads_cnt} Text Ads):</strong> Paid search is actively capturing bottom-of-funnel buyer queries.")
+        opportunities.append("<strong>Refresh Long-Running Ad Copy:</strong> Test new ad variations alongside 600+ day evergreen search ads to improve click-through rates.")
     else:
-        strengths.append("<strong>Clean Heading Typography:</strong> Headline text is cleanly formatted without component concatenation bugs.")
+        opportunities.append("<strong>Capture High-Intent Search Demand:</strong> Run targeted Google Search Ads on commercial buyer terms while organic rankings grow.")
 
-    if invis_pct > 50:
-        weaknesses.append(f"<strong>Commercial Search Invisibility ({invis_pct:.1f}%):</strong> High-intent commercial queries return competitor websites instead of your domain.")
-        opportunities.append("<strong>Targeted Google Search Ads:</strong> Launch search campaigns to capture immediate buyer search terms while organic authority builds.")
-        threats.append("<strong>Pipeline Capture by Rivals:</strong> Active decision-makers searching for genomics solutions online bypass your brand entirely.")
-    else:
-        strengths.append(f"<strong>Strong Organic Footprint ({100 - invis_pct:.1f}% Visibility):</strong> The domain holds competitive visibility across monitored commercial search terms.")
+    if has_cwv and lcp_numeric > 3.0:
+        weaknesses.append(f"<strong>Slow Mobile Visual Load ({esc(raw_lcp)}):</strong> Large hero images delay mobile page rendering beyond the 2.5-second benchmark.")
+        opportunities.append("<strong>Compress Mobile Hero Images:</strong> Convert large images to WebP format and defer non-essential scripts.")
+        roadmap.append(("Priority 2 (Performance)", "Speed Up Mobile Page Load", f"Compress hero images and defer heavy scripts to cut mobile load time from {esc(raw_lcp)} to under 2.5s.", "Reduces mobile bounce rate and improves user experience"))
 
-    if aeo_loss_pct > 50:
-        threats.append(f"<strong>AI Recommendation Exclusion ({aeo_loss_pct:.1f}% AI Answers Lost):</strong> Google AI Overviews and ChatGPT recommend rival solutions to buyers.")
-        opportunities.append("<strong>Inverted-Pyramid AEO Copywriting:</strong> Open service pages with direct 40-word factual definitions to trigger AI citations.")
-    else:
-        strengths.append("<strong>Generative AI Citation Presence:</strong> Domain is actively cited as a credible source by generative search engines.")
+    if "A" in str(sec_grade):
+        strengths.append(f"<strong>Strong Website Security ({esc(sec_grade)}):</strong> HTTPS transport security and safe browsing checks passed.")
 
-    if tbt_is_good:
-        strengths.append(f"<strong>Responsive Script Execution (TBT: {raw_tbt}):</strong> Main thread execution is fast with no noticeable JavaScript input lag.")
-    else:
-        weaknesses.append(f"<strong>Mobile Main-Thread Contention (TBT: {raw_tbt}):</strong> Third-party tracking scripts delay mobile user interactions.")
-        opportunities.append("<strong>Script Deferral:</strong> Defer non-critical analytics and marketing scripts until after primary content renders.")
-
-    raw_lcp = str(cwv_res.get("LCP", "N/A"))
-    if "s" in raw_lcp:
-        try:
-            lcp_val = float(raw_lcp.replace("s", "").replace(",", "").strip())
-            if lcp_val > 2.5:
-                weaknesses.append(f"<strong>Mobile Visual Load Delay (LCP: {raw_lcp}):</strong> Uncompressed media slows down mobile visitor engagement.")
-                opportunities.append("<strong>Optimize Mobile Images:</strong> Convert hero graphics to WebP to drop load time under 2.5 seconds.")
-        except Exception:
-            pass
-
-    if "A" in sec_grade:
-        strengths.append("<strong>Strict Enterprise Security:</strong> Modern HTTPS transport security (HSTS) and Content Security Policies (CSP) actively enforced.")
-    else:
-        weaknesses.append(f"<strong>Perimeter Security Opportunities ({sec_grade}):</strong> Strengthen transport headers to prevent clickjacking and protocol downgrades.")
-
-    roadmap_items = []
-    if is_thin:
-        roadmap_items.append({
-            "Urgency": "Phase 1 (Critical)",
-            "Initiative": "Multi-Page Solution Architecture",
-            "Action": f"Expand website from {total_pages} single page into dedicated solution URLs for each core clinical offering.",
-            "Impact": "Establishes the prerequisite foundation to rank for commercial searches"
-        })
-    if "s" in raw_lcp:
-        roadmap_items.append({
-            "Urgency": "Phase 1 (Critical)",
-            "Initiative": "Mobile Visual Load Optimization",
-            "Action": "Compress hero images to WebP and preload primary web fonts to cut LCP under 2.5s.",
-            "Impact": "Reduces mobile visitor drop-off and passes Core Web Vitals"
-        })
-    if mashed_count > 0:
-        roadmap_items.append({
-            "Urgency": "Phase 1 (Critical)",
-            "Initiative": "Heading Spacing & Typography Fix",
-            "Action": "Add space delimiters between stylized CSS spans inside heading templates.",
-            "Impact": "Immediate clean keyword parsing by search engine crawlers"
-        })
-    if not has_llms:
-        roadmap_items.append({
-            "Urgency": "Phase 2 (High Impact)",
-            "Initiative": "Publish Root AI Index (llms.txt)",
-            "Action": "Deploy a compliant machine-readable llms.txt file to the server root directory.",
-            "Impact": "Enables clean indexing by ChatGPT, Perplexity, and Claude"
-        })
-    roadmap_items.append({
-        "Urgency": "Phase 2 (High Impact)",
-        "Initiative": "Deploy Specialized Medical Schemas",
-        "Action": "Add MedicalBusiness, DiagnosticProcedure, and FAQPage structured data.",
-        "Impact": "Qualifies service pages for interactive Google rich snippet displays"
-    })
-    if aeo_loss_pct > 30:
-        roadmap_items.append({
-            "Urgency": "Phase 2 (High Impact)",
-            "Initiative": "Inverted-Pyramid AEO Copywriting",
-            "Action": "Open each new service page with a direct 40-word factual definition of the clinical offering.",
-            "Impact": "Dramatically increases brand citations in Google AI Overviews"
-        })
-    if invis_pct > 30:
-        roadmap_items.append({
-            "Urgency": "Phase 3 (Growth)",
-            "Initiative": "High-Intent Paid Search Campaigns",
-            "Action": "Launch targeted Google Search Ads on clinical genomics and sequencing terms.",
-            "Impact": "Captures ready-to-buy healthcare decision-makers immediately"
-        })
     if avg_a11y < 85:
-        roadmap_items.append({
-            "Urgency": "Phase 3 (Growth)",
-            "Initiative": "Web Accessibility (WCAG 2.1) Fixes",
-            "Action": "Declare <html lang='en'>, add descriptive image alt tags, and label interactive buttons.",
-            "Impact": "Ensures digital accessibility compliance and removes search ranking penalties"
-        })
+        roadmap.append(("Priority 3 (Compliance)", "Improve Page Accessibility (WCAG)", "Ensure &lt;html lang=\"en\"&gt; is set, add descriptive image alt text, and label buttons.", "Improves usability for screen readers and search quality"))
+
+    w_html = "".join([f"<li>{x}</li>" for x in weaknesses[:5]])
+    o_html = "".join([f"<li>{x}</li>" for x in opportunities[:5]])
+    s_html = "".join([f"<li>{x}</li>" for x in strengths[:4]])
+    t_html = "".join([f"<li>{x}</li>" for x in threats[:4]]) or "<li><strong>Competitive Search Pressure:</strong> Established competitors invest heavily in educational content and structured data.</li>"
 
     roadmap_rows = ""
-    for item in roadmap_items[:8]:
-        color = "#dc2626" if "Critical" in item["Urgency"] else ("#004b93" if "High Impact" in item["Urgency"] else "#16a34a")
-        roadmap_rows += f"""<tr>
-            <td style="color:{color}; font-weight:bold;">{item['Urgency']}</td>
-            <td style="font-weight:bold;">{item['Initiative']}</td>
-            <td>{item['Action']}</td>
-            <td>{item['Impact']}</td>
-        </tr>"""
+    for prio, init_name, act_txt, imp_txt in roadmap[:7]:
+        p_col = "#dc2626" if "Priority 1" in prio else ("#004b93" if "Priority 2" in prio else "#16a34a")
+        roadmap_rows += f'''<tr>
+            <td style="color:{p_col}; font-weight:bold;">{esc(prio)}</td>
+            <td style="font-weight:bold;">{esc(init_name)}</td>
+            <td>{act_txt}</td>
+            <td>{esc(imp_txt)}</td>
+        </tr>'''
 
-    w_html = "".join([f"<li>{x}</li>" for x in weaknesses])
-    o_html = "".join([f"<li>{x}</li>" for x in opportunities])
-    s_html = "".join([f"<li>{x}</li>" for x in strengths])
-    t_html = "".join([f"<li>{x}</li>" for x in threats])
+    conditional_sections_html = ""
 
-    progress_html = ""
-    if prev_snapshot:
-        p_date = prev_snapshot.get('snapshot_date', 'Baseline')
-        p_schema = prev_snapshot.get('commercial_schema_pct', 0)
-        p_invis = prev_snapshot.get('invis_pct', 0)
-        p_aeo = prev_snapshot.get('aeo_loss_pct', 0)
-        progress_html = f"""
-        <div style="background:#f1f5f9; border-left:4px solid #004b93; padding:8px 12px; margin:10px 0; font-size:7.5pt; line-height:1.5;">
-            <strong style="color:#004b93;">Historical Audit Progress (vs. {p_date}):</strong><br>
-            • Schema Coverage: {p_schema:.1f}% ➔ {comm_schema_pct:.1f}% ({'+' if comm_schema_pct >= p_schema else ''}{comm_schema_pct - p_schema:.1f}%)<br>
-            • Search Invisibility: {p_invis:.1f}% ➔ {invis_pct:.1f}% ({invis_pct - p_invis:.1f}%)<br>
-            • AEO Competitor Wins: {p_aeo:.1f}% ➔ {aeo_loss_pct:.1f}% ({aeo_loss_pct - p_aeo:.1f}%)
-        </div>
-        """
+    if has_eq or has_can:
+        eq_block = ""
+        if has_eq:
+            eq_block = f'''
+            <div class="sub-header">Internal Link Flow Across Reviewed Pages</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:44%;">Page URL</th>
+                        <th style="width:14%; text-align:center;">Inbound Links</th>
+                        <th style="width:26%;">Sample Link Text</th>
+                        <th style="width:16%; text-align:center;">Link Status</th>
+                    </tr>
+                </thead>
+                <tbody>{equity_rows}</tbody>
+            </table>'''
 
-    pdf_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        @page {{
-            size: letter;
-            margin: 0.5in;
-            @top-left {{
-                content: "Connext Global Solutions — Executive Digital & AEO Forensic Audit";
-                font-size: 7pt;
-                color: #64748b;
-                font-family: 'DejaVu Sans', sans-serif;
-                font-weight: bold;
-            }}
-            @top-right {{
-                content: "Audited Entity: {target_name}";
-                font-size: 7pt;
-                color: #004b93;
-                font-family: 'DejaVu Sans', sans-serif;
-            }}
-            @bottom-left {{
-                content: "CONFIDENTIAL — Strategic Growth Advisory";
-                font-size: 6.5pt;
-                color: #94a3b8;
-                font-family: 'DejaVu Sans', sans-serif;
-            }}
-            @bottom-right {{
-                content: "Page " counter(page) " of " counter(pages);
-                font-size: 7pt;
-                color: #004b93;
-                font-family: 'DejaVu Sans', sans-serif;
-                font-weight: bold;
-            }}
-        }}
-        body {{
-            font-family: 'DejaVu Sans', sans-serif;
-            color: #1e293b;
-            font-size: 8pt;
-            line-height: 1.45;
-        }}
-        .page-break {{
-            page-break-after: always;
-        }}
-        .header-cover {{
-            border-bottom: 3.5px solid #004b93;
-            padding-bottom: 8px;
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-        .title-main {{
-            color: #004b93;
-            font-size: 17pt;
-            font-weight: bold;
-            margin: 0;
-            line-height: 1.2;
-        }}
-        .sub-main {{
-            color: #e85122;
-            font-size: 9.5pt;
-            font-weight: bold;
-            margin-top: 2px;
-        }}
-        .score-row {{
-            display: flex;
-            justify-content: space-between;
-            gap: 8px;
-            margin: 12px 0;
-        }}
-        .score-card {{
-            flex: 1;
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-top: 3.5px solid #004b93;
-            padding: 8px 3px;
-            text-align: center;
-            border-radius: 4px;
-        }}
-        .score-val {{
-            font-size: 16pt;
-            font-weight: bold;
-        }}
-        .score-lbl {{
-            font-size: 6.5pt;
-            color: #64748b;
-            font-weight: bold;
-            text-transform: uppercase;
-            margin-top: 3px;
-        }}
-        .meta-strip {{
-            background: #f1f5f9;
-            border: 1px solid #cbd5e1;
-            padding: 6px 10px;
-            border-radius: 4px;
-            font-size: 7.5pt;
-            margin: 8px 0;
-            line-height: 1.5;
-        }}
-        .section-header {{
-            color: #004b93;
-            font-size: 11.5pt;
-            font-weight: bold;
-            border-bottom: 2px solid #004b93;
-            padding-bottom: 3px;
-            margin-top: 10px;
-            margin-bottom: 6px;
-        }}
-        .sub-header {{
-            color: #e85122;
-            font-size: 9pt;
-            font-weight: bold;
-            margin-top: 8px;
-            margin-bottom: 4px;
-        }}
-        .exec-guide {{
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-left: 3.5px solid #004b93;
-            padding: 7px 10px;
-            margin: 5px 0 8px 0;
-            font-size: 7.2pt;
-            line-height: 1.45;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 5px;
-            margin-bottom: 10px;
-            font-size: 7.2pt;
-        }}
-        th {{
-            background: #004b93;
-            color: white;
-            padding: 4.5px 5px;
-            border: 1px solid #003a73;
-            text-align: left;
-            font-weight: bold;
-        }}
-        td {{
-            padding: 4px 5px;
-            border: 1px solid #e2e8f0;
-        }}
-        tr:nth-child(even) td {{
-            background: #f8fafc;
-        }}
-        .swot-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin: 8px 0;
-        }}
-        .swot-box {{
-            border: 1px solid #e2e8f0;
-            padding: 8px 10px;
-            border-radius: 4px;
-            font-size: 7.3pt;
-            line-height: 1.45;
-        }}
-        .swot-w {{ border-top: 3.5px solid #dc2626; background: #fffdfd; }}
-        .swot-o {{ border-top: 3.5px solid #16a34a; background: #fdfefe; }}
-        .swot-s {{ border-top: 3.5px solid #004b93; background: #fbfdff; }}
-        .swot-t {{ border-top: 3.5px solid #f2a900; background: #fffdfa; }}
-        .alert-box {{
-            background: #fef2f2;
-            border: 1px solid #fecaca;
-            border-left: 4px solid #dc2626;
-            padding: 7px 10px;
-            border-radius: 4px;
-            font-size: 7.5pt;
-            color: #991b1b;
-            margin: 6px 0;
-            line-height: 1.4;
-        }}
-        ul {{
-            margin: 4px 0 2px 0;
-            padding-left: 15px;
-        }}
-        li {{
-            margin-bottom: 3px;
-        }}
-    </style>
-    </head>
-    <body>
+        can_block = ""
+        if has_can:
+            can_block = f'''
+            <div class="sub-header">Duplicate &amp; Overlapping Page Copy Detected</div>
+            <p class="intro-note">Pages with 60%+ identical copy compete against each other in Google search results. Consolidating variants or adding canonical tags resolves this overlap.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:36%;">Primary Page URL</th>
+                        <th style="width:36%;">Overlapping Page URL</th>
+                        <th style="width:12%; text-align:center;">Copy Overlap</th>
+                        <th style="width:16%; text-align:center;">Recommended Fix</th>
+                    </tr>
+                </thead>
+                <tbody>{can_rows}</tbody>
+            </table>'''
 
-        <!-- PAGE 1: COVER & EXECUTIVE PSI DASHBOARD -->
-        <div class="header-cover">
-            <div>
-                <div class="title-main">Enterprise Digital & AEO Forensic Audit</div>
-                <div class="sub-main">Search Visibility, AI Discoverability, Infrastructure & Growth Roadmap</div>
-            </div>
-            <div>
-                <img src="{logo_url}" style="width: 130px;">
-            </div>
-        </div>
-
-        <div class="meta-strip">
-            <strong>Audited Domain:</strong> {target_name} &nbsp;|&nbsp; 
-            <strong>Audit Date:</strong> {datetime.now().strftime("%B %d, %Y")} &nbsp;|&nbsp; 
-            <strong>Site Footprint:</strong> {'1 Page (Single-Page Architecture)' if is_thin else str(total_pages) + ' Pages Crawled'} &nbsp;|&nbsp; 
-            <strong>Prepared by:</strong> Connext Global Solutions
-        </div>
-
-        <p style="margin: 6px 0 10px 0; font-size: 8pt; color:#334155; line-height:1.5;">
-            This executive report delivers a complete assessment of the search presence, artificial intelligence discoverability, mobile performance, and digital competitive standing of <strong>{target_name}</strong>. Audited across Google Search, Chrome User Experience (CrUX), and Generative AI Answer Engines (ChatGPT, Google AI Overviews, Perplexity).
-        </p>
-
-        {progress_html}
-
-        <div class="score-row">
-            <div class="score-card">
-                <div class="score-val" style="color:{badge_color(score_seo)};">{score_seo}</div>
-                <div class="score-lbl">Organic Search</div>
-            </div>
-            <div class="score-card">
-                <div class="score-val" style="color:{badge_color(score_schema)};">{score_schema}</div>
-                <div class="score-lbl">Schema Markup</div>
-            </div>
-            <div class="score-card">
-                <div class="score-val" style="color:{badge_color(score_aeo)};">{score_aeo}</div>
-                <div class="score-lbl">Generative AEO</div>
-            </div>
-            <div class="score-card">
-                <div class="score-val" style="color:{badge_color(cwv_score)};">{cwv_score}</div>
-                <div class="score-lbl">Mobile Speed</div>
-            </div>
-            <div class="score-card">
-                <div class="score-val" style="color:{badge_color(avg_a11y)};">{avg_a11y}</div>
-                <div class="score-lbl">Accessibility</div>
-            </div>
-            <div class="score-card">
-                <div class="score-val" style="color:{badge_color(score_sec)};">{score_sec}</div>
-                <div class="score-lbl">Perimeter Security</div>
-            </div>
-        </div>
-
-        <div class="section-header">Executive Performance Diagnostic Summary</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:28%;">Audit Pillar</th>
-                    <th style="width:24%;">Measured Status</th>
-                    <th style="width:24%;">Industry Standard</th>
-                    <th style="width:24%;">Executive Takeaway</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><strong>Organic Search Visibility</strong></td>
-                    <td>{invis_pct:.1f}% absent from Top 20</td>
-                    <td>&lt; 20.0% absent</td>
-                    <td style="color:{'#16a34a' if invis_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ High Visibility' if invis_pct <= 20 else '🔴 Severe Traffic Loss'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Site Architecture Footprint</strong></td>
-                    <td>{'1 Total Page Crawled' if is_thin else str(total_pages) + ' Pages Crawled'}</td>
-                    <td>Multi-Page Solution Silos</td>
-                    <td style="color:{'#dc2626' if is_thin else '#16a34a'}; font-weight:bold;">{'🚨 Single-Page Blocker' if is_thin else '✓ Multi-Page Silos'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Generative AEO Citation Share</strong></td>
-                    <td>{aeo_loss_pct:.1f}% answers won by rivals</td>
-                    <td>&gt; 50.0% brand presence</td>
-                    <td style="color:{'#16a34a' if aeo_loss_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ Brand Preferred' if aeo_loss_pct <= 20 else '🔴 Omitted from AI Answers'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Structured Schema Coverage</strong></td>
-                    <td>{comm_schema_pct:.1f}% declared</td>
-                    <td>100.0% coverage</td>
-                    <td style="color:{'#16a34a' if comm_schema_pct >= 85 else '#dc2626'}; font-weight:bold;">{'✓ Structured Data Active' if comm_schema_pct >= 85 else '🔴 Deficit'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Mobile Code Execution (TBT)</strong></td>
-                    <td>{raw_tbt} execution latency</td>
-                    <td>&lt; 300 ms</td>
-                    <td style="color:{'#16a34a' if tbt_is_good else '#dc2626'}; font-weight:bold;">{'✓ Optimal Responsive Code' if tbt_is_good else '🔴 Script Contention'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Mobile Visual Load Delay (LCP)</strong></td>
-                    <td>{cwv_res.get('LCP', 'N/A')}</td>
-                    <td>&lt; 2.5 seconds</td>
-                    <td style="color:#dc2626; font-weight:bold;">🔴 Visual Render Delay</td>
-                </tr>
-                <tr>
-                    <td><strong>Machine-Readable Standard (llms.txt)</strong></td>
-                    <td>{'Active (HTTP 200)' if has_llms else 'Missing (404 Error)'}</td>
-                    <td>Standard Endpoint Active</td>
-                    <td style="color:{'#16a34a' if has_llms else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_llms else '🔴 AI Ingestion Blocked'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Web Accessibility (WCAG 2.1 AA)</strong></td>
-                    <td>{avg_a11y}/100 compliance score</td>
-                    <td>&gt; 90/100 score</td>
-                    <td style="color:{'#16a34a' if avg_a11y >= 85 else '#f2a900'}; font-weight:bold;">{'✓ Compliant' if avg_a11y >= 85 else '⚠️ Remediation Required'}</td>
-                </tr>
-            </tbody>
-        </table>
-
+        conditional_sections_html += f'''
         <div class="page-break"></div>
+        <div class="section-header">Internal Linking &amp; Content Duplication Review</div>
+        <p class="intro-note">Reviewing how internal links connect your pages and identifying duplicate product/category copy that can dilute search rankings.</p>
+        {eq_block}
+        {can_block}
+        '''
 
-        <!-- PAGE 2: PILLAR 1 ARCHITECTURE & SECURITY -->
-        <div class="section-header">Pillar 1: Forensic Web Architecture, Schemas & Security</div>
-        
-        <div class="exec-guide">
-            <strong>Plain-English Guide for Leadership:</strong> Search engines (Google) and artificial intelligence models index specific web pages to answer specific user questions. This section audits whether your technical website framework allows search engines to read, understand, and trust your organization.
-        </div>
+    if has_serp or has_aeo or has_ads:
+        serp_block = ""
+        if has_serp:
+            serp_block = f'''
+            <div class="sub-header">Google Search Rankings (US Index — {len(valid_r)} Queries Checked)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:34%;">Search Query</th>
+                        <th style="width:14%; text-align:center;">Current Rank</th>
+                        <th style="width:32%;">Ranking Page URL</th>
+                        <th style="width:20%; text-align:center;">#1 Page Leader</th>
+                    </tr>
+                </thead>
+                <tbody>{serp_rows}</tbody>
+            </table>'''
 
-        {f'<div class="alert-box"><strong>🚨 Critical Architecture Finding:</strong> Currently operating as a <strong>single-page website (1 page total)</strong>. Because search engines evaluate and rank individual URLs designed to solve specific problems, having only one page makes it structurally impossible to rank for multiple distinct commercial services simultaneously.</div>' if is_thin else ''}
+        aeo_block = ""
+        if has_aeo:
+            aeo_block = f'''
+            <div class="sub-header">Generative AI Answer Visibility (Google AI Overviews — {len(valid_a)} Prompts)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:42%;">Buyer Question Prompt</th>
+                        <th style="width:14%; text-align:center;">AI Overview?</th>
+                        <th style="width:14%; text-align:center;">Brand Cited?</th>
+                        <th style="width:30%;">Sources Referenced</th>
+                    </tr>
+                </thead>
+                <tbody>{aeo_rows}</tbody>
+            </table>'''
 
-        <div class="sub-header">Crawled Website Architecture & Code Quality</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:40%;">Target Web URL</th>
-                    <th style="width:12%; text-align:center;">Main Headings</th>
-                    <th style="width:14%; text-align:center;">Typography</th>
-                    <th style="width:14%; text-align:center;">Schemas</th>
-                    <th style="width:10%; text-align:center;">WCAG</th>
-                    <th style="width:10%; text-align:center;">Word Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {crawl_rows if crawl_rows else '<tr><td colspan="6">No crawled pages recorded.</td></tr>'}
-            </tbody>
-        </table>
+        ads_block = ""
+        if has_ads:
+            ads_block = f'''
+            <div class="sub-header">Active Google Ads Portfolio Summary ({len(df_ads)} Tracked Creatives)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:26%;">Ad Channel &amp; Format</th>
+                        <th style="width:26%;">Active Flight &amp; Dates</th>
+                        <th style="width:20%;">Longevity Tier</th>
+                        <th style="width:28%;">Performance Insight</th>
+                    </tr>
+                </thead>
+                <tbody>{ads_rows}</tbody>
+            </table>'''
 
-        <div class="sub-header">Perimeter Edge Security, Google Trust & Knowledge Graph Verification</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:35%;">Security & Trust Protocol</th>
-                    <th style="width:25%;">Measured Status</th>
-                    <th style="width:40%;">Enterprise Standard & Explanation</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><strong>Transport Security (HSTS)</strong></td>
-                    <td>{'✓ Strict HSTS Enforced' if sec_res.get('HSTS') else '<span style="color:#dc2626; font-weight:bold;">🔴 Missing (Needs Server Header)</span>'}</td>
-                    <td>Prevents protocol downgrade attacks.</td>
-                </tr>
-                <tr>
-                    <td><strong>Content Security Policy (CSP)</strong></td>
-                    <td>{'✓ Active' if sec_res.get('CSP') else '⚠️ Not Detected'}</td>
-                    <td>Protects against malicious cross-site scripting and code injections.</td>
-                </tr>
-                <tr>
-                    <td><strong>Google Safe Browsing Certification</strong></td>
-                    <td><span style="color:#16a34a; font-weight:bold;">{sb_res.get('Status', '✓ Clean')}</span></td>
-                    <td>Zero malware, deceptive forms, or security flags detected by Google.</td>
-                </tr>
-                <tr>
-                    <td><strong>Google Knowledge Graph Entity Status</strong></td>
-                    <td><span style="color:{'#16a34a' if 'Verified' in str(kg_info.get('Recognized')) else '#dc2626'}; font-weight:bold;">{kg_info.get('Recognized', 'Unrecognized Entity')}</span></td>
-                    <td>Google entity verification in global Knowledge Graph.</td>
-                </tr>
-                <tr>
-                    <td><strong>AI Standard Endpoint (llms.txt)</strong></td>
-                    <td><span style="color:{'#16a34a' if has_llms else '#dc2626'}; font-weight:bold;">{'✓ Active (HTTP 200)' if has_llms else '🔴 Missing (404 Error)'}</span></td>
-                    <td>Enables AI engines to read a verified product catalog.</td>
-                </tr>
-            </tbody>
-        </table>
-
+        conditional_sections_html += f'''
         <div class="page-break"></div>
+        <div class="section-header">Search Visibility, AI Answers &amp; Paid Media Presence</div>
+        <p class="intro-note">Evaluating how prospective customers discover {esc(brand_display)} across traditional Google search results, conversational AI summaries, and paid search placements.</p>
+        {serp_block}
+        {aeo_block}
+        {ads_block}
+        '''
 
-        <!-- PAGE 3: PILLAR 2 CONTENT SILOS & CANNIBALIZATION -->
-        <div class="section-header">Pillar 2: Content Silos, Link Authority & Cannibalization Analysis</div>
-
-        <div class="exec-guide">
-            <strong>Plain-English Guide for Leadership:</strong> In enterprise digital strategy, authoritative informational content (articles, white papers, and clinical case studies) passes credibility to commercial service offerings through internal links. This section inspects how authority flows through your digital assets.
-        </div>
-
-        <div class="sub-header">Internal Link Equity & Authority Flow Analysis</div>
+    cwv_block = ""
+    if has_cwv:
+        cwv_block = f'''
+        <div class="sub-header">Mobile Speed &amp; Core Web Vitals</div>
         <table>
             <thead>
                 <tr>
-                    <th style="width:40%;">Commercial Solution Hub</th>
-                    <th style="width:18%; text-align:center;">Inbound Contextual Links</th>
-                    <th style="width:24%;">Link Anchor Text Profile</th>
-                    <th style="width:18%; text-align:center;">Authority Flow Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {equity_rows if equity_rows else f'<tr><td colspan="4" style="color:#64748b; font-style:italic; padding:12px;"><strong>Zero Editorial Content Archive Detected:</strong> {target_name} currently operates without a blog, educational resource center, white paper hub, or case study archive. As a result, the domain possesses zero internal link equity flow to reinforce service authority.</td></tr>'}
-            </tbody>
-        </table>
-
-        <div class="sub-header">Content Duplication & Keyword Cannibalization Check</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:38%;">Primary URL</th>
-                    <th style="width:38%;">Competing Internal URL</th>
-                    <th style="width:12%; text-align:center;">Similarity Score</th>
-                    <th style="width:12%; text-align:center;">Conflict Risk</th>
-                </tr>
-            </thead>
-            <tbody>
-                {can_rows if can_rows else f'<tr><td colspan="4" style="color:#64748b; font-style:italic; padding:12px;"><strong>No Internal Cannibalization Conflicts Found:</strong> Because {target_name} operates on {total_pages} page(s), there are no competing internal landing pages cannibalizing search traffic. However, this also limits total keyword targeting capacity.</td></tr>'}
-            </tbody>
-        </table>
-
-        <div class="exec-guide" style="border-left-color:#e85122;">
-            <strong>Strategic Advisory:</strong> Establishing an educational content hub (e.g., resources on genetic variant interpretation, pediatric sequencing guidelines, and patient FAQs) will build the necessary domain authority to power Google rankings and AI citations.
-        </div>
-
-        <div class="page-break"></div>
-
-        <!-- PAGE 4: PILLAR 3 SERP VISIBILITY -->
-        <div class="section-header">Pillar 3: Organic Google Search Visibility (SERP Demand Capture)</div>
-
-        <div class="exec-guide">
-            <strong>Plain-English Guide for Leadership:</strong> This benchmark queries live Google Search results in the United States across the exact non-branded commercial phrases healthcare providers, clinics, and families use when searching for clinical genomics solutions.
-        </div>
-
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:36%;">Target Commercial Search Query</th>
-                    <th style="width:12%; text-align:center;">Google Rank</th>
-                    <th style="width:30%;">Current Ranking URL</th>
-                    <th style="width:22%; text-align:center;">Competitor Dominating Page 1</th>
-                </tr>
-            </thead>
-            <tbody>
-                {serp_rows if serp_rows else '<tr><td colspan="4">No SERP tracking data recorded. (Execute Tab 4 SERP Check to populate).</td></tr>'}
-            </tbody>
-        </table>
-
-        <div class="alert-box">
-            <strong>Commercial Impact:</strong> The domain exhibits a <strong>{invis_pct:.1f}% organic search invisibility rate</strong> across all commercial keywords. When healthcare professionals and institutional partners look for genomics solutions on Google, 100% of the customer demand is captured by competitors and medical publishers.
-        </div>
-
-        <div class="page-break"></div>
-
-        <!-- PAGE 5: PILLAR 4 AEO & PAID ADS -->
-        <div class="section-header">Pillar 4: Generative AI Answer Engines (AEO) & Paid Media Intel</div>
-
-        <div class="exec-guide">
-            <strong>Plain-English Guide for Leadership:</strong> Corporate buyers and clinical directors increasingly use conversational AI engines (ChatGPT, Google AI Overviews, Perplexity) to shortlist vendors. If an AI engine does not cite your brand, you are excluded from buyer consideration before an RFP is ever issued.
-        </div>
-
-        <div class="sub-header">Live Generative AI Overview Citation Audit</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:40%;">Buyer Consultative Evaluation Prompt</th>
-                    <th style="width:14%; text-align:center;">AI Overview?</th>
-                    <th style="width:16%; text-align:center;">Brand Cited?</th>
-                    <th style="width:30%;">Winning Sources Cited by AI</th>
-                </tr>
-            </thead>
-            <tbody>
-                {aeo_rows if aeo_rows else '<tr><td colspan="4">No AEO prompts evaluated. (Execute Tab 5 AEO test to populate).</td></tr>'}
-            </tbody>
-        </table>
-
-        <div class="sub-header">Active Paid Media Footprint (Google Ads Transparency Center)</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:24%;">Ad Channel & Format</th>
-                    <th style="width:24%;">Active Flight & Dates</th>
-                    <th style="width:22%;">Longevity Tier</th>
-                    <th style="width:30%;">Strategic Takeaway</th>
-                </tr>
-            </thead>
-            <tbody>
-                {ads_rows if ads_rows else f'<tr><td style="font-weight:bold;">Google Search & Display</td><td style="color:#dc2626; font-weight:bold;">0 Active Ads</td><td>None</td><td>Competitors own the top sponsored search spots uncontested, capturing ready-to-buy searchers.</td></tr>'}
-            </tbody>
-        </table>
-
-        <div class="page-break"></div>
-
-        <!-- PAGE 6: PILLAR 5 PERFORMANCE & SWOT MATRIX -->
-        <div class="section-header">Pillar 5: Mobile User Experience & SWOT Strategic Assessment</div>
-
-        <div class="exec-guide">
-            <strong>Plain-English Guide for Leadership:</strong> Google measures speed directly on mobile devices to evaluate user satisfaction. A fast code foundation with slow visual images creates visitor frustration and hurts search rankings.
-        </div>
-
-        <div class="sub-header">Mobile Core Web Vitals Performance Breakdown</div>
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:26%;">Performance Metric</th>
-                    <th style="width:22%; text-align:center;">Measured Value</th>
-                    <th style="width:22%; text-align:center;">Target Standard</th>
-                    <th style="width:30%;">Executive Plain-English Explanation</th>
+                    <th style="width:28%;">Speed Metric</th>
+                    <th style="width:20%; text-align:center;">Measured Value</th>
+                    <th style="width:20%; text-align:center;">Target Benchmark</th>
+                    <th style="width:32%;">What This Means for Visitors</th>
                 </tr>
             </thead>
             <tbody>
@@ -3995,187 +3721,543 @@ def build_executive_dossier_html(
                     <td><strong>Mobile Performance Score</strong></td>
                     <td style="text-align:center; font-weight:bold; color:{badge_color(cwv_score)};">{cwv_score} / 100</td>
                     <td style="text-align:center;">&gt; 90 / 100</td>
-                    <td>Fair foundation, but visual loading delays require optimization.</td>
+                    <td>{'Fast mobile experience.' if cwv_score >= 85 else 'Visual load delays are slowing mobile visitors.'}</td>
                 </tr>
                 <tr>
-                    <td><strong>Code Execution Speed (TBT)</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:{'#16a34a' if tbt_is_good else '#dc2626'};">{raw_tbt}</td>
+                    <td><strong>Main Visual Load Time (LCP)</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:{'#16a34a' if lcp_numeric <= 2.5 else '#dc2626'};">{esc(raw_lcp)}</td>
+                    <td style="text-align:center;">&lt; 2.5 seconds</td>
+                    <td>{'Main banner loads quickly.' if lcp_numeric <= 2.5 else 'Visitors wait too long for the main image/headline to appear.'}</td>
+                </tr>
+                <tr>
+                    <td><strong>Script Responsiveness (TBT)</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:{'#16a34a' if tbt_is_good else '#b45309'};">{esc(raw_tbt)}</td>
                     <td style="text-align:center;">&lt; 300 ms</td>
-                    <td><strong style="color:{'#16a34a' if tbt_is_good else '#dc2626'};">{'✓ Fast:' if tbt_is_good else '🔴 Delay:'}</strong> Website scripts run cleanly without screen freezes.</td>
-                </tr>
-                <tr>
-                    <td><strong>Visual Render Delay (LCP)</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:#dc2626;">{cwv_res.get('LCP', '10.1 s')}</td>
-                    <td style="text-align:center;">&lt; 2.50 s</td>
-                    <td><strong style="color:#dc2626;">🔴 Delayed:</strong> Mobile visitors wait {cwv_res.get('LCP', '10.1 s')} to see the main headline/image.</td>
+                    <td>{'Page responds smoothly to taps.' if tbt_is_good else 'Background tracking scripts slightly delay tap responsiveness.'}</td>
                 </tr>
                 <tr>
                     <td><strong>Visual Layout Stability (CLS)</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:#16a34a;">{cwv_res.get('CLS', '0.000')}</td>
+                    <td style="text-align:center; font-weight:bold; color:#16a34a;">{esc(cwv_res.get('CLS', '0.000'))}</td>
                     <td style="text-align:center;">&lt; 0.100</td>
-                    <td><strong style="color:#16a34a;">✓ Flawless:</strong> Page elements stay perfectly still as they load.</td>
+                    <td>Page elements stay steady without jumping during load.</td>
                 </tr>
             </tbody>
-        </table>
+        </table>'''
 
-        <div class="section-header" style="margin-top:10px;">SWOT Strategic Assessment (Full English)</div>
-        <div class="swot-grid">
-            <div class="swot-box swot-w">
-                <strong style="color: #dc2626; font-size:8pt;">WEAKNESSES (Internal Gaps)</strong>
-                <ul>{w_html}</ul>
-            </div>
-            <div class="swot-box swot-o">
-                <strong style="color: #16a34a; font-size:8pt;">OPPORTUNITIES (Market Growth Levers)</strong>
-                <ul>{o_html}</ul>
-            </div>
-            <div class="swot-box swot-s">
-                <strong style="color: #004b93; font-size:8pt;">STRENGTHS (Internal Advantages)</strong>
-                <ul>{s_html}</ul>
-            </div>
-            <div class="swot-box swot-t">
-                <strong style="color: #b45309; font-size:8pt;">THREATS (External Competitive Risks)</strong>
-                <ul>{t_html}</ul>
-            </div>
+    summary_rows = f'''
+        <tr>
+            <td><strong>Pages Reviewed in This Audit</strong></td>
+            <td>{total_pages} Page(s)</td>
+            <td>Dedicated Service URLs</td>
+            <td style="color:{'#16a34a' if total_pages >= 5 else '#dc2626'}; font-weight:bold;">{'✓ Multi-Page Structure' if total_pages >= 5 else 'Needs More Service Pages'}</td>
+        </tr>
+        <tr>
+            <td><strong>Product / Service &amp; FAQ Schema</strong></td>
+            <td>{comm_schema_pct:.0f}% Declared ({comm_schema_cnt}/{total_pages})</td>
+            <td>100% Coverage</td>
+            <td style="color:{'#16a34a' if comm_schema_pct >= 80 else '#dc2626'}; font-weight:bold;">{'✓ Complete' if comm_schema_pct >= 80 else f'{missing_schema_pct:.0f}% Missing Schema'}</td>
+        </tr>
+        <tr>
+            <td><strong>Content Depth (&lt;300 Words)</strong></td>
+            <td>{thin_cnt} Thin Page(s)</td>
+            <td>0 Thin Pages</td>
+            <td style="color:{'#16a34a' if thin_cnt == 0 else '#dc2626'}; font-weight:bold;">{'✓ Substantial Copy' if thin_cnt == 0 else 'Expand Short Pages'}</td>
+        </tr>
+        <tr>
+            <td><strong>AI Crawler Directory (<code>/llms.txt</code>)</strong></td>
+            <td>{'Active (HTTP 200)' if has_llms else 'Not Published (404)'}</td>
+            <td>Published at Root</td>
+            <td style="color:{'#16a34a' if has_llms else '#b45309'}; font-weight:bold;">{'✓ Active' if has_llms else 'Recommended'}</td>
+        </tr>
+        <tr>
+            <td><strong>Web Accessibility (WCAG 2.1 AA)</strong></td>
+            <td>{avg_a11y} / 100</td>
+            <td>&gt; 90 / 100</td>
+            <td style="color:{'#16a34a' if avg_a11y >= 85 else '#b45309'}; font-weight:bold;">{'✓ Compliant' if avg_a11y >= 85 else 'Needs Minor Fixes'}</td>
+        </tr>'''
+
+    if has_serp:
+        summary_rows += f'''
+        <tr>
+            <td><strong>Google Organic Search Visibility</strong></td>
+            <td>{100.0 - invis_pct:.0f}% on Page 1–2 ({invis_pct:.0f}% Off)</td>
+            <td>&gt; 80% on Page 1–2</td>
+            <td style="color:{'#16a34a' if invis_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ Strong Visibility' if invis_pct <= 20 else 'Growth Opportunity'}</td>
+        </tr>'''
+    if has_aeo:
+        summary_rows += f'''
+        <tr>
+            <td><strong>AI Answer Citations (Google AIO)</strong></td>
+            <td>{100.0 - aeo_loss_pct:.0f}% Cited ({aeo_loss_pct:.0f}% Omitted)</td>
+            <td>&gt; 50% Cited</td>
+            <td style="color:{'#16a34a' if aeo_loss_pct <= 40 else '#dc2626'}; font-weight:bold;">{'✓ Cited by AI' if aeo_loss_pct <= 40 else 'Needs FAQ &amp; Q&amp;A Copy'}</td>
+        </tr>'''
+    if has_cwv:
+        summary_rows += f'''
+        <tr>
+            <td><strong>Mobile Visual Load Time (LCP)</strong></td>
+            <td>{esc(raw_lcp)}</td>
+            <td>&lt; 2.5 seconds</td>
+            <td style="color:{'#16a34a' if lcp_numeric <= 2.5 else '#dc2626'}; font-weight:bold;">{'✓ Fast' if lcp_numeric <= 2.5 else 'Compress Hero Images'}</td>
+        </tr>'''
+    if da_val:
+        summary_rows += f'''
+        <tr>
+            <td><strong>Domain Authority (Crawly Index)</strong></td>
+            <td>{da_val} / 100 ({ref_dom:,} Referring Sites)</td>
+            <td>&gt; 35 / 100</td>
+            <td style="color:{'#16a34a' if int(da_val) >= 35 else '#b45309'}; font-weight:bold;">{'✓ Established' if int(da_val) >= 35 else 'Build Industry Links'}</td>
+        </tr>'''
+
+    pdf_html = f'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    @page {{
+        size: letter;
+        margin: 0.5in;
+        @top-left {{
+            content: "Connext Global Solutions — Digital & Search Performance Report";
+            font-size: 7pt;
+            color: #64748b;
+            font-family: 'DejaVu Sans', sans-serif;
+            font-weight: bold;
+        }}
+        @top-right {{
+            content: "{esc(brand_display)} ({esc(clean_host)})";
+            font-size: 7pt;
+            color: #004b93;
+            font-family: 'DejaVu Sans', sans-serif;
+        }}
+        @bottom-left {{
+            content: "Prepared for {esc(brand_display)} by Connext Global Solutions";
+            font-size: 6.5pt;
+            color: #94a3b8;
+            font-family: 'DejaVu Sans', sans-serif;
+        }}
+        @bottom-right {{
+            content: "Page " counter(page) " of " counter(pages);
+            font-size: 7pt;
+            color: #004b93;
+            font-family: 'DejaVu Sans', sans-serif;
+            font-weight: bold;
+        }}
+    }}
+    body {{
+        font-family: 'DejaVu Sans', sans-serif;
+        color: #1e293b;
+        font-size: 8pt;
+        line-height: 1.45;
+    }}
+    .page-break {{ page-break-after: always; }}
+    .header-cover {{
+        border-bottom: 3.5px solid #004b93;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }}
+    .title-main {{
+        color: #004b93;
+        font-size: 16.5pt;
+        font-weight: bold;
+        margin: 0;
+        line-height: 1.2;
+    }}
+    .sub-main {{
+        color: #e85122;
+        font-size: 9.5pt;
+        font-weight: bold;
+        margin-top: 2px;
+    }}
+    .meta-strip {{
+        background: #f1f5f9;
+        border: 1px solid #cbd5e1;
+        padding: 6px 10px;
+        border-radius: 4px;
+        font-size: 7.5pt;
+        margin: 8px 0;
+        line-height: 1.5;
+    }}
+    .score-row {{
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 11px 0;
+    }}
+    .score-card {{
+        flex: 1;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-top: 3.5px solid #004b93;
+        padding: 8px 3px;
+        text-align: center;
+        border-radius: 4px;
+    }}
+    .score-val {{ font-size: 15pt; font-weight: bold; }}
+    .score-lbl {{
+        font-size: 6.3pt;
+        color: #64748b;
+        font-weight: bold;
+        text-transform: uppercase;
+        margin-top: 3px;
+    }}
+    .section-header {{
+        color: #004b93;
+        font-size: 11.5pt;
+        font-weight: bold;
+        border-bottom: 2px solid #004b93;
+        padding-bottom: 3px;
+        margin-top: 8px;
+        margin-bottom: 6px;
+    }}
+    .sub-header {{
+        color: #e85122;
+        font-size: 9pt;
+        font-weight: bold;
+        margin-top: 8px;
+        margin-bottom: 4px;
+    }}
+    .intro-note {{
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-left: 3.5px solid #004b93;
+        padding: 6px 10px;
+        margin: 4px 0 8px 0;
+        font-size: 7.3pt;
+        line-height: 1.45;
+        color: #334155;
+    }}
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 4px;
+        margin-bottom: 10px;
+        font-size: 7.1pt;
+    }}
+    thead {{ display: table-header-group; }}
+    tr {{ page-break-inside: avoid; break-inside: avoid; }}
+    th {{
+        background: #004b93;
+        color: white;
+        padding: 4.5px 5px;
+        border: 1px solid #003a73;
+        text-align: left;
+        font-weight: bold;
+    }}
+    td {{
+        padding: 4px 5px;
+        border: 1px solid #e2e8f0;
+    }}
+    tr:nth-child(even) td {{ background: #f8fafc; }}
+    .swot-grid {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 9px;
+        margin: 8px 0;
+    }}
+    .swot-box {{
+        border: 1px solid #e2e8f0;
+        padding: 7px 9px;
+        border-radius: 4px;
+        font-size: 7.2pt;
+        line-height: 1.4;
+        page-break-inside: avoid;
+        break-inside: avoid;
+    }}
+    .swot-w {{ border-top: 3.5px solid #dc2626; background: #fffdfd; }}
+    .swot-o {{ border-top: 3.5px solid #16a34a; background: #fdfefe; }}
+    .swot-s {{ border-top: 3.5px solid #004b93; background: #fbfdff; }}
+    .swot-t {{ border-top: 3.5px solid #f2a900; background: #fffdfa; }}
+    ul {{ margin: 4px 0 2px 0; padding-left: 14px; }}
+    li {{ margin-bottom: 3px; }}
+</style>
+</head>
+<body>
+
+    <!-- PAGE 1: EXECUTIVE SUMMARY & SCORECARD -->
+    <div class="header-cover">
+        <div>
+            <div class="title-main">{esc(brand_display)} — Digital &amp; Search Performance Audit</div>
+            <div class="sub-main">{esc(scope_title)}</div>
         </div>
-
-        <div class="page-break"></div>
-
-        <!-- PAGE 7: OPERATIONAL ROADMAP & SIGN-OFF -->
-        <div class="section-header">Prioritized Operational Roadmap & Engineering Plan</div>
-
-        <div class="exec-guide">
-            <strong>Executive Implementation Plan:</strong> This roadmap translates the audit findings into direct engineering and marketing initiatives, organized by operational priority, estimated effort, and expected business outcome.
+        <div>
+            <img src="{logo_url}" style="width: 125px;">
         </div>
+    </div>
 
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:20%;">Urgency Tier</th>
-                    <th style="width:26%;">Strategic Initiative</th>
-                    <th style="width:34%;">Specific Action Items</th>
-                    <th style="width:20%;">Projected Business Outcome</th>
-                </tr>
-            </thead>
-            <tbody>
-                {roadmap_rows}
-            </tbody>
-        </table>
+    <div class="meta-strip">
+        <strong>Website:</strong> {esc(clean_host)} &nbsp;|&nbsp;
+        <strong>Scope:</strong> {esc(scope_title)} &nbsp;|&nbsp;
+        <strong>Audit Date:</strong> {datetime.now().strftime("%B %d, %Y")} &nbsp;|&nbsp;
+        <strong>Prepared by:</strong> Connext Global Solutions
+    </div>
 
-        <div class="meta-strip" style="margin-top:20px; font-size:7.2pt;">
-            <strong>Advisory Sign-off:</strong> This executive audit dossier was prepared for <strong>{target_name}</strong> by the Connext Global Solutions marketing and digital architecture team. For implementation assistance, custom analytics tracking, or paid media management, contact Connext Global Solutions.
+    <p style="margin: 6px 0 10px 0; font-size: 8pt; color:#334155; line-height:1.5;">
+        This report evaluates how easily customers and AI search engines (Google, ChatGPT, and Perplexity) can find, understand, and trust the audited pages on <strong>{esc(clean_host)}</strong>. All findings below are based on live crawl and search diagnostics for this page group.
+    </p>
+
+    <div class="score-row">
+        <div class="score-card">
+            <div class="score-val" style="color:{badge_color(score_seo)};">{score_seo}</div>
+            <div class="score-lbl">Search Readiness</div>
         </div>
+        <div class="score-card">
+            <div class="score-val" style="color:{badge_color(score_schema)};">{score_schema}</div>
+            <div class="score-lbl">Product/FAQ Schema</div>
+        </div>
+        <div class="score-card">
+            <div class="score-val" style="color:{badge_color(score_aeo)};">{score_aeo}</div>
+            <div class="score-lbl">AI Answer Readiness</div>
+        </div>
+        <div class="score-card">
+            <div class="score-val" style="color:{badge_color(cwv_score)};">{cwv_score}</div>
+            <div class="score-lbl">Mobile Speed</div>
+        </div>
+        <div class="score-card">
+            <div class="score-val" style="color:{badge_color(avg_a11y)};">{avg_a11y}</div>
+            <div class="score-lbl">Accessibility</div>
+        </div>
+        <div class="score-card">
+            <div class="score-val" style="color:{badge_color(score_sec)};">{score_sec}</div>
+            <div class="score-lbl">Security</div>
+        </div>
+    </div>
 
-    </body>
-    </html>
-    """
+    <div class="section-header">Performance Summary Across Audited Pillars</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width:30%;">Evaluation Area</th>
+                <th style="width:26%;">Current Status</th>
+                <th style="width:22%;">Recommended Target</th>
+                <th style="width:22%;">Assessment</th>
+            </tr>
+        </thead>
+        <tbody>
+            {summary_rows}
+        </tbody>
+    </table>
+
+    <div class="page-break"></div>
+
+    <!-- PAGE 2: PAGE-BY-PAGE CONTENT, METADATA & SCHEMA REVIEW -->
+    <div class="section-header">Page-by-Page Content, Metadata &amp; Schema Review</div>
+    <p class="intro-note">
+        Each page below was checked for word count depth, Meta Title/Description completeness, headline spacing, structured product/FAQ schema tags, and accessibility compliance.
+    </p>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width:42%;">Audited Page URL</th>
+                <th style="width:10%; text-align:center;">Words</th>
+                <th style="width:12%; text-align:center;">Meta Tags</th>
+                <th style="width:12%; text-align:center;">Headlines</th>
+                <th style="width:12%; text-align:center;">Schema</th>
+                <th style="width:12%; text-align:center;">WCAG</th>
+            </tr>
+        </thead>
+        <tbody>
+            {crawl_rows if crawl_rows else '<tr><td colspan="6">No pages crawled.</td></tr>'}
+        </tbody>
+    </table>
+
+    <div class="sub-header">Technical Trust, Security &amp; AI Crawler Readiness</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width:36%;">Technical Check</th>
+                <th style="width:24%;">Status</th>
+                <th style="width:40%;">Why It Matters</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>HTTPS &amp; Transport Security</strong></td>
+                <td>{esc(sec_grade)}</td>
+                <td>Protects visitor data and builds browser trust.</td>
+            </tr>
+            <tr>
+                <td><strong>Google Safe Browsing Status</strong></td>
+                <td>{esc(sb_res.get('Status', 'Clean'))}</td>
+                <td>Confirms zero malware or phishing flags in Google's index.</td>
+            </tr>
+            <tr>
+                <td><strong>AI Crawler Directory (<code>/llms.txt</code>)</strong></td>
+                <td>{'✓ Active (HTTP 200)' if has_llms else 'Not Published (404)'}</td>
+                <td>Gives AI assistants a clean summary of your pages and services.</td>
+            </tr>
+            <tr>
+                <td><strong>Google Knowledge Graph Entity</strong></td>
+                <td>{esc(kg_info.get('Recognized', 'Not Checked'))}</td>
+                <td>Helps Google connect your domain to a verified brand profile.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    {conditional_sections_html}
+
+    <div class="page-break"></div>
+
+    <!-- FINAL PAGE: SPEED, SWOT & PRIORITIZED ACTION PLAN -->
+    <div class="section-header">Strategic Assessment &amp; Prioritized Action Plan</div>
+    {cwv_block}
+
+    <div class="sub-header">Strategic Strengths, Gaps &amp; Opportunities</div>
+    <div class="swot-grid">
+        <div class="swot-box swot-s">
+            <strong style="color:#004b93; font-size:7.8pt;">STRENGTHS (What Is Working)</strong>
+            <ul>{s_html}</ul>
+        </div>
+        <div class="swot-box swot-w">
+            <strong style="color:#dc2626; font-size:7.8pt;">GAPS TO FIX (Internal Priorities)</strong>
+            <ul>{w_html}</ul>
+        </div>
+        <div class="swot-box swot-o">
+            <strong style="color:#16a34a; font-size:7.8pt;">GROWTH OPPORTUNITIES</strong>
+            <ul>{o_html}</ul>
+        </div>
+        <div class="swot-box swot-t">
+            <strong style="color:#b45309; font-size:7.8pt;">MARKET &amp; COMPETITIVE RISKS</strong>
+            <ul>{t_html}</ul>
+        </div>
+    </div>
+
+    <div class="sub-header">Recommended Action Plan for These Pages</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width:19%;">Priority</th>
+                <th style="width:24%;">Action Item</th>
+                <th style="width:35%;">What to Do</th>
+                <th style="width:22%;">Expected Result</th>
+            </tr>
+        </thead>
+        <tbody>
+            {roadmap_rows}
+        </tbody>
+    </table>
+
+    <div class="meta-strip" style="margin-top:10px; font-size:7pt;">
+        <strong>Prepared by Connext Global Solutions:</strong> Need help implementing schema markup, page copy updates, or paid search campaigns? Contact your Connext digital strategy team.
+    </div>
+
+</body>
+</html>'''
     return weasyprint.HTML(string=pdf_html).write_pdf()
 
+
 with tab_report:
-    st.subheader("Executive Audit PDF Deliverables (Connext Global Identity)")
-    st.markdown('''<div class="guide-box"><strong>Two Executive Deliverable Formats Available:</strong><br>• <strong>Option A (1-Page Executive Summary):</strong> A high-impact C-level brief containing the executive metrics, SWOT strategic analysis, and core architecture crawl inventory on exactly one page.<br>• <strong>Option B (7-Page Full Technical Dossier):</strong> A comprehensive, publication-grade forensic document containing deep-dive tables for Architecture, Silo Link Equity, Cannibalization, SERP, AEO, CWV, and the Phased Operational Roadmap.<br><strong>How to Generate:</strong> Click the compile button for either format below, then download your ready PDF.</div>''', unsafe_allow_html=True)
+    st.subheader("Client-Ready PDF Deliverables (Connext Global Identity)")
+    st.markdown('''
+    <div class="guide-box">
+        <strong>🎯 Tailored for Multi-Section Client Audits:</strong><br>
+        • <strong>Option A (1-Page Executive Brief):</strong> A clean 1-page summary tailored specifically to the audited pages—ideal when sending separate reports for different sections of a client's website.<br>
+        • <strong>Option B (Full Technical Report):</strong> Includes page-by-page diagnostics, search &amp; AI visibility (when tested), and a prioritized action plan—automatically omitting empty sections so every page adds value.
+    </div>
+    ''', unsafe_allow_html=True)
 
     df_c = st.session_state.get("df_crawl", pd.DataFrame())
     if df_c.empty:
-        st.warning("No audit data available yet. Please run Tab 1 (Tech & Schemas) first before generating executive PDF reports.")
+        st.warning("No audit data available yet. Please run Tab 1 (Tech, Content & SEO) first before generating PDF reports.")
     else:
+        target_name = st.session_state.get("target_domain", "https://alphacord.com")
+        clean_host_default = urlparse(target_name).netloc.replace("www.", "") or target_name
+        auto_brand = clean_host_default.split(".")[0].title()
+        auto_scope = detect_audit_scope_label(df_c, target_name)
+
+        c_meta1, c_meta2 = st.columns(2)
+        with c_meta1:
+            custom_client_name = st.text_input("Client / Brand Name (Shown on Report Header)", value=auto_brand)
+        with c_meta2:
+            custom_section_label = st.text_input("Report Focus / Audited Page Group", value=auto_scope)
+
+        safe_slug = re.sub(r'[^a-zA-Z0-9_-]+', '_', custom_section_label.split("—")[0].strip()).strip("_").lower() or "site_audit"
+        safe_logo = get_safe_logo_src(LOGO_URL)
+
         col_pdf1, col_pdf2 = st.columns(2)
 
         with col_pdf1:
-            st.markdown("### Option A: 1-Page Executive Summary")
-            st.caption("Perfect for C-level briefings, board summaries, and rapid vendor reviews. Clean 1-page layout.")
-            
-            if st.button("Compile 1-Page Executive Summary (PDF)", use_container_width=True):
-                with st.spinner("Compiling 1-page executive summary PDF in full English..."):
-                    df_r = st.session_state.get("df_rankings", pd.DataFrame())
-                    df_a = st.session_state.get("df_aeo", pd.DataFrame())
-                    df_eq = st.session_state.get("df_equity", pd.DataFrame())
-                    df_can = st.session_state.get("df_cannibal", pd.DataFrame())
-                    df_ads = st.session_state.get("df_ads", pd.DataFrame())
-                    target_name = st.session_state.get("target_domain", "Target Domain")
-                    sec_res = st.session_state.get("sec_headers", {})
-                    cwv_res = st.session_state.get("cwv_metrics", {})
-                    crux_res = st.session_state.get("crux_metrics", {})
-                    sb_res = st.session_state.get("safe_browsing", {})
-                    kg_info = st.session_state.get("kg_info", {})
-                    prev = st.session_state.get("prev_snapshot")
-                    has_llms = bool(st.session_state.get("has_llms", False))
+            st.markdown("### Option A: 1-Page Executive Brief")
+            st.caption("Single-page summary tailored to this specific page group.")
+            if st.button("Compile 1-Page Executive Brief (PDF)", use_container_width=True):
+                try:
+                    with st.spinner("Building 1-page executive brief..."):
+                        summary_pdf_bytes = build_executive_summary_1page_html(
+                            df_c=df_c,
+                            df_r=st.session_state.get("df_rankings", pd.DataFrame()),
+                            df_a=st.session_state.get("df_aeo", pd.DataFrame()),
+                            df_eq=st.session_state.get("df_equity", pd.DataFrame()),
+                            df_can=st.session_state.get("df_cannibal", pd.DataFrame()),
+                            df_ads=st.session_state.get("df_ads", pd.DataFrame()),
+                            cwv_res=st.session_state.get("cwv_metrics", {}),
+                            crux_res=st.session_state.get("crux_metrics", {}),
+                            sec_res=st.session_state.get("sec_headers", {}),
+                            sb_res=st.session_state.get("safe_browsing", {}),
+                            kg_info=st.session_state.get("kg_info", {}),
+                            prev_snapshot=st.session_state.get("prev_snapshot"),
+                            target_name=target_name,
+                            has_llms=bool(st.session_state.get("has_llms", False)),
+                            logo_url=safe_logo,
+                            crawly_data=st.session_state.get("crawly_data", {}),
+                            section_label=custom_section_label,
+                            client_name=custom_client_name
+                        )
+                        st.session_state["compiled_summary_pdf_bytes"] = summary_pdf_bytes
+                        st.session_state["compiled_summary_filename"] = f"{clean_host_default}_{safe_slug}_executive_brief.pdf"
+                        st.success("✓ 1-Page Executive Brief ready!")
+                except Exception as e:
+                    st.error(f"Could not compile 1-page PDF: {e}")
 
-                    summary_pdf_bytes = build_executive_summary_1page_html(
-                        df_c=df_c,
-                        df_r=df_r,
-                        df_a=df_a,
-                        df_eq=df_eq,
-                        df_can=df_can,
-                        df_ads=df_ads,
-                        cwv_res=cwv_res,
-                        crux_res=crux_res,
-                        sec_res=sec_res,
-                        sb_res=sb_res,
-                        kg_info=kg_info,
-                        prev_snapshot=prev,
-                        target_name=target_name,
-                        has_llms=has_llms,
-                        logo_url=LOGO_URL
-                    )
-                    st.session_state["compiled_summary_pdf_bytes"] = summary_pdf_bytes
-                    st.session_state["compiled_summary_filename"] = f"connext_executive_summary_{urlparse(target_name).netloc}.pdf"
-                    st.success("1-Page Executive Summary compiled successfully!")
-
-            if "compiled_summary_pdf_bytes" in st.session_state and st.session_state["compiled_summary_pdf_bytes"]:
+            if st.session_state.get("compiled_summary_pdf_bytes"):
                 st.download_button(
-                    label="Download 1-Page Executive Summary (PDF)",
+                    label="⬇️ Download 1-Page Executive Brief (PDF)",
                     data=st.session_state["compiled_summary_pdf_bytes"],
-                    file_name=st.session_state.get("compiled_summary_filename", "connext_executive_summary.pdf"),
+                    file_name=st.session_state.get("compiled_summary_filename", "executive_brief.pdf"),
                     mime="application/pdf",
                     use_container_width=True
                 )
 
         with col_pdf2:
-            st.markdown("### Option B: 7-Page Full Technical Dossier")
-            st.caption("Deep-dive forensic deliverable with all tables, competitive benchmarks, and phased engineering roadmap.")
-            
-            if st.button("Compile 7-Page Full Technical Dossier (PDF)", use_container_width=True):
-                with st.spinner("Compiling publication-grade 7-page executive PDF dossier in full English..."):
-                    df_r = st.session_state.get("df_rankings", pd.DataFrame())
-                    df_a = st.session_state.get("df_aeo", pd.DataFrame())
-                    df_eq = st.session_state.get("df_equity", pd.DataFrame())
-                    df_can = st.session_state.get("df_cannibal", pd.DataFrame())
-                    df_ads = st.session_state.get("df_ads", pd.DataFrame())
-                    target_name = st.session_state.get("target_domain", "Target Domain")
-                    sec_res = st.session_state.get("sec_headers", {})
-                    cwv_res = st.session_state.get("cwv_metrics", {})
-                    crux_res = st.session_state.get("crux_metrics", {})
-                    sb_res = st.session_state.get("safe_browsing", {})
-                    kg_info = st.session_state.get("kg_info", {})
-                    prev = st.session_state.get("prev_snapshot")
-                    has_llms = bool(st.session_state.get("has_llms", False))
+            st.markdown("### Option B: Full Technical & Search Report")
+            st.caption("Complete multi-page report covering every module run for this batch.")
+            if st.button("Compile Full Technical Report (PDF)", use_container_width=True):
+                try:
+                    with st.spinner("Building full technical report..."):
+                        dossier_pdf_bytes = build_executive_dossier_html(
+                            df_c=df_c,
+                            df_r=st.session_state.get("df_rankings", pd.DataFrame()),
+                            df_a=st.session_state.get("df_aeo", pd.DataFrame()),
+                            df_eq=st.session_state.get("df_equity", pd.DataFrame()),
+                            df_can=st.session_state.get("df_cannibal", pd.DataFrame()),
+                            df_ads=st.session_state.get("df_ads", pd.DataFrame()),
+                            cwv_res=st.session_state.get("cwv_metrics", {}),
+                            crux_res=st.session_state.get("crux_metrics", {}),
+                            sec_res=st.session_state.get("sec_headers", {}),
+                            sb_res=st.session_state.get("safe_browsing", {}),
+                            kg_info=st.session_state.get("kg_info", {}),
+                            prev_snapshot=st.session_state.get("prev_snapshot"),
+                            target_name=target_name,
+                            has_llms=bool(st.session_state.get("has_llms", False)),
+                            logo_url=safe_logo,
+                            crawly_data=st.session_state.get("crawly_data", {}),
+                            section_label=custom_section_label,
+                            client_name=custom_client_name
+                        )
+                        st.session_state["compiled_dossier_pdf_bytes"] = dossier_pdf_bytes
+                        st.session_state["compiled_dossier_filename"] = f"{clean_host_default}_{safe_slug}_technical_report.pdf"
+                        st.success("✓ Full Technical Report ready!")
+                except Exception as e:
+                    st.error(f"Could not compile full technical report: {e}")
 
-                    dossier_pdf_bytes = build_executive_dossier_html(
-                        df_c=df_c,
-                        df_r=df_r,
-                        df_a=df_a,
-                        df_eq=df_eq,
-                        df_can=df_can,
-                        df_ads=df_ads,
-                        cwv_res=cwv_res,
-                        crux_res=crux_res,
-                        sec_res=sec_res,
-                        sb_res=sb_res,
-                        kg_info=kg_info,
-                        prev_snapshot=prev,
-                        target_name=target_name,
-                        has_llms=has_llms,
-                        logo_url=LOGO_URL
-                    )
-                    st.session_state["compiled_dossier_pdf_bytes"] = dossier_pdf_bytes
-                    st.session_state["compiled_dossier_filename"] = f"connext_technical_dossier_{urlparse(target_name).netloc}.pdf"
-                    st.success("7-Page Technical Dossier compiled successfully!")
-
-            if "compiled_dossier_pdf_bytes" in st.session_state and st.session_state["compiled_dossier_pdf_bytes"]:
+            if st.session_state.get("compiled_dossier_pdf_bytes"):
                 st.download_button(
-                    label="Download 7-Page Technical Dossier (PDF)",
+                    label="⬇️ Download Full Technical Report (PDF)",
                     data=st.session_state["compiled_dossier_pdf_bytes"],
-                    file_name=st.session_state.get("compiled_dossier_filename", "connext_technical_dossier.pdf"),
+                    file_name=st.session_state.get("compiled_dossier_filename", "technical_report.pdf"),
                     mime="application/pdf",
                     use_container_width=True
                 )
