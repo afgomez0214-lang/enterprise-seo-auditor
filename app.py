@@ -2308,20 +2308,24 @@ with tab_serp:
                     ranking_url = "—"
                     top_competitor = "—"
                     org_results = res.get("organic_results", [])
+                    top_10_doms = []
                     if org_results:
                         top_competitor = urlparse(org_results[0].get("link", "")).netloc.replace("www.", "")
                     for pos, item in enumerate(org_results[:20], 1):
                         link = item.get("link", "")
-                        if target_host in link:
+                        dom_i = urlparse(link).netloc.replace("www.", "").lower()
+                        if pos <= 10 and dom_i:
+                            top_10_doms.append({"domain": dom_i, "rank": pos})
+                        if target_host in link and found_rank == "> 20 (Absent)":
                             found_rank = f"#{pos}"
                             ranking_url = clean_display_url(link)
-                            break
                     records.append({
                         "Keyword": kw,
                         "Target_Rank": found_rank,
                         "Ranking_URL": ranking_url,
                         "Top_Ranking_Competitor": top_competitor,
-                        "Status": "Visible" if "#" in found_rank else "Absent"
+                        "Status": "Visible" if "#" in found_rank else "Absent",
+                        "Top_10_JSON": json.dumps(top_10_doms)
                     })
                 else:
                     records.append({
@@ -2362,7 +2366,53 @@ with tab_serp:
         rank_counts = df_r["Target_Rank"].apply(parse_rank_tier).value_counts()
         st.bar_chart(rank_counts, color="#004b93")
 
-        st.dataframe(df_r, use_container_width=True)
+        disp_r_cols = [c for c in ["Keyword", "Target_Rank", "Ranking_URL", "Top_Ranking_Competitor", "Status"] if c in df_r.columns]
+        st.dataframe(df_r[disp_r_cols], hide_index=True, use_container_width=True)
+
+        # Competitor Share-of-Voice (SOV) Leaderboard across Page 1
+        if "Top_10_JSON" in df_r.columns:
+            sov_stats = {}
+            total_valid_qs = max(1, len(valid_r_ui))
+            for _, r_s in valid_r_ui.iterrows():
+                try:
+                    t10 = json.loads(r_s.get("Top_10_JSON", "[]"))
+                    seen_in_q = set()
+                    for entry in t10:
+                        d_name = entry.get("domain", "")
+                        rk_val = entry.get("rank", 10)
+                        if d_name and d_name not in seen_in_q:
+                            seen_in_q.add(d_name)
+                            if d_name not in sov_stats:
+                                sov_stats[d_name] = {"Domain": d_name, "Page_1_Keywords": 0, "Ranks": []}
+                            sov_stats[d_name]["Page_1_Keywords"] += 1
+                            sov_stats[d_name]["Ranks"].append(rk_val)
+                except Exception:
+                    pass
+            if sov_stats:
+                st.markdown("##### 🏆 Page-1 Competitor Share-of-Voice (SOV) Leaderboard")
+                st.caption("Measures which domains dominate Page-1 positions across all tracked non-branded queries.")
+                sov_rows = []
+                t_host_clean = urlparse(st.session_state.get("target_domain", "")).netloc.replace("www.", "").lower()
+                for d_k, info_s in sov_stats.items():
+                    kw_hits = info_s["Page_1_Keywords"]
+                    avg_rk = round(sum(info_s["Ranks"]) / max(1, len(info_s["Ranks"])), 1)
+                    sov_pct = round((kw_hits / total_valid_qs) * 100, 1)
+                    sov_rows.append({
+                        "Domain": d_k,
+                        "Role": "🟢 Your Website" if (t_host_clean and t_host_clean in d_k) else "⚔️ Competitor / Publisher",
+                        "Page_1_Appearances": kw_hits,
+                        "Page_1_SOV_Pct": sov_pct,
+                        "Avg_Page_1_Position": avg_rk
+                    })
+                df_sov = pd.DataFrame(sov_rows).sort_values(by=["Page_1_Appearances", "Avg_Page_1_Position"], ascending=[False, True]).head(12)
+                st.dataframe(
+                    df_sov,
+                    column_config={
+                        "Page_1_SOV_Pct": st.column_config.ProgressColumn("Page-1 Share of Voice", format="%.1f%%", min_value=0, max_value=100)
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
         st.download_button(
             label="⬇️ Download SERP Rankings (CSV)",
             data=df_r.to_csv(index=False),
@@ -2423,11 +2473,19 @@ with tab_aeo:
                                     winning_sources.append(dom_ref)
                                 if target_host in ref_link:
                                     cited = True
+                    aio_snippet = ""
+                    if has_aio:
+                        if isinstance(ai_overview.get("snippet"), str):
+                            aio_snippet = ai_overview["snippet"][:260]
+                        elif isinstance(ai_overview.get("text_blocks"), list):
+                            parts_tb = [tb.get("snippet", "") for tb in ai_overview["text_blocks"] if isinstance(tb, dict) and tb.get("snippet")]
+                            aio_snippet = " ".join(parts_tb)[:260]
                     aeo_records.append({
                         "Buyer_Query": q,
                         "AI_Overview_Generated": "Yes" if has_aio else "No",
                         "Target_Cited": "✓ Yes" if cited else "🔴 Omitted",
                         "Cited_Competitors": ", ".join(winning_sources[:3]) if winning_sources else ("AI Summary (No External Links)" if has_aio else "None"),
+                        "AI_Answer_Preview": aio_snippet or "—",
                         "Outcome": "Won" if cited else "Competitor Won"
                     })
                 else:
@@ -2455,7 +2513,21 @@ with tab_aeo:
         st.markdown("##### 📊 AI Overview Recommendation Win vs. Loss Ratio")
         st.bar_chart(df_a["Outcome"].value_counts(), color="#f2a900")
 
-        st.dataframe(df_a, use_container_width=True)
+        st.dataframe(df_a, hide_index=True, use_container_width=True)
+
+        # Aggregate Top Third-Party Domains Cited by Google AI Overviews (Digital PR Targets)
+        cited_dom_counter = Counter()
+        for c_str in df_a["Cited_Competitors"].dropna():
+            for d_item in [x.strip() for x in str(c_str).split(",") if x.strip() and "." in x and "Summary" not in x]:
+                cited_dom_counter[d_item] += 1
+        if cited_dom_counter:
+            st.markdown("##### 📣 Top Third-Party Domains Cited by AI (Digital PR & Outreach Targets)")
+            st.caption("Websites that Google AI Overviews rely on most frequently when answering buyer questions in your category.")
+            pr_targets_df = pd.DataFrame([
+                {"Cited_Domain": dom_k, "AI_Citations": cnt_k, "Strategic_Action": "Secure brand mention, review profile, or guest placement on this domain"}
+                for dom_k, cnt_k in cited_dom_counter.most_common(10)
+            ])
+            st.dataframe(pr_targets_df, hide_index=True, use_container_width=True)
         st.download_button(
             label="⬇️ Download AEO Citations Report (CSV)",
             data=df_a.to_csv(index=False),
@@ -2761,26 +2833,34 @@ with tab_cwv:
             st.error("Google Cloud API Key required in sidebar or Streamlit Secrets.")
         else:
             with st.spinner("Executing Google Lighthouse lab test and CrUX field query..."):
-                # 1. Lab Data (PageSpeed Insights API)
-                try:
-                    ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={cwv_url}&strategy=mobile&key={google_cloud_key}"
-                    r_ps = requests.get(ps_url, timeout=30).json()
-                    lh = r_ps.get("lighthouseResult", {})
-                    audits = lh.get("audits", {})
-                    
-                    cwv = {
-                        "Score": int(lh.get("categories", {}).get("performance", {}).get("score", 0) * 100),
-                        "TBT": audits.get("total-blocking-time", {}).get("displayValue", "N/A"),
-                        "LCP": audits.get("largest-contentful-paint", {}).get("displayValue", "N/A"),
-                        "CLS": audits.get("cumulative-layout-shift", {}).get("displayValue", "N/A"),
-                        "FCP": audits.get("first-contentful-paint", {}).get("displayValue", "N/A"),
-                        "Speed_Index": audits.get("speed-index", {}).get("displayValue", "N/A")
+                # 1. Dual Lab Data (Mobile + Desktop PageSpeed Insights API)
+                def fetch_psi_strategy(target_u, strat):
+                    ps_u = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={target_u}&strategy={strat}&key={google_cloud_key}"
+                    r_p = requests.get(ps_u, timeout=32).json()
+                    lh_obj = r_p.get("lighthouseResult", {})
+                    aud_obj = lh_obj.get("audits", {})
+                    return {
+                        "Score": int(lh_obj.get("categories", {}).get("performance", {}).get("score", 0) * 100),
+                        "TBT": aud_obj.get("total-blocking-time", {}).get("displayValue", "N/A"),
+                        "LCP": aud_obj.get("largest-contentful-paint", {}).get("displayValue", "N/A"),
+                        "CLS": aud_obj.get("cumulative-layout-shift", {}).get("displayValue", "N/A"),
+                        "FCP": aud_obj.get("first-contentful-paint", {}).get("displayValue", "N/A"),
+                        "Speed_Index": aud_obj.get("speed-index", {}).get("displayValue", "N/A"),
+                        "Tested_URL": target_u
                     }
-                    cwv["Tested_URL"] = cwv_url
-                    st.session_state["cwv_metrics"] = cwv
+
+                try:
+                    cwv_mob = fetch_psi_strategy(cwv_url, "mobile")
+                    st.session_state["cwv_metrics"] = cwv_mob
                     st.session_state["cwv_tested_url"] = cwv_url
                 except Exception as e:
-                    st.error(f"PageSpeed Lab API Error: {e}")
+                    st.error(f"Mobile PageSpeed Lab API Error: {e}")
+
+                try:
+                    cwv_desk = fetch_psi_strategy(cwv_url, "desktop")
+                    st.session_state["cwv_desktop_metrics"] = cwv_desk
+                except Exception:
+                    st.session_state["cwv_desktop_metrics"] = {}
 
                 # 2. Field Data (Chrome UX Report CrUX API)
                 try:
@@ -2836,6 +2916,52 @@ with tab_cwv:
             cx3.metric("Field p75 CLS", crux.get("Real_CLS_p75", "N/A"))
         else:
             st.info(f"CrUX Status: {crux.get('Status', 'No data')}. (Note: Sites need minimum traffic thresholds for Google to log 28-day Chrome user cohorts).")
+
+        # Desktop Lab Comparison
+        cwv_d = st.session_state.get("cwv_desktop_metrics", {})
+        if cwv_d and "Score" in cwv_d:
+            st.markdown("##### 🖥️ Desktop vs. Mobile Lab Comparison (Same URL)")
+            comp_cwv_df = pd.DataFrame([
+                {"Device": "📱 Mobile (4G Throttled)", "Performance Score": f"{cwv.get('Score', 0)}/100", "LCP": cwv.get("LCP", "N/A"), "TBT": cwv.get("TBT", "N/A"), "CLS": cwv.get("CLS", "N/A")},
+                {"Device": "🖥️ Desktop (Broadband)", "Performance Score": f"{cwv_d.get('Score', 0)}/100", "LCP": cwv_d.get("LCP", "N/A"), "TBT": cwv_d.get("TBT", "N/A"), "CLS": cwv_d.get("CLS", "N/A")}
+            ])
+            st.dataframe(comp_cwv_df, hide_index=True, use_container_width=True)
+
+    # Multi-Template Batch CWV Comparison
+    st.markdown("---")
+    st.subheader("📑 Multi-Template Speed Comparison (Compare Up to 5 Key URLs)")
+    st.caption("Test different page templates (e.g., Homepage, Product Page, Collection Page, Blog Article) side-by-side.")
+    crawled_sample_urls = st.session_state["df_crawl"]["URL"].head(4).tolist() if not st.session_state["df_crawl"].empty else [st.session_state.get("target_domain", "https://alphacord.com")]
+    batch_cwv_input = st.text_area("Page Template URLs to Benchmark (Max 5 URLs, one per line):", value="\n".join(crawled_sample_urls), height=105)
+    if st.button("⚡ Benchmark Multiple Page Templates (Mobile)", key="btn_batch_cwv"):
+        if not google_cloud_key:
+            st.error("Google Cloud API Key required in sidebar.")
+        else:
+            b_urls = [u.strip() for u in batch_cwv_input.split("\n") if u.strip().startswith("http")][:5]
+            b_rows = []
+            b_prog = st.progress(0)
+            for idx_b, bu in enumerate(b_urls):
+                try:
+                    ps_b = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={bu}&strategy=mobile&key={google_cloud_key}"
+                    rb = requests.get(ps_b, timeout=32).json()
+                    lh_b = rb.get("lighthouseResult", {})
+                    aud_b = lh_b.get("audits", {})
+                    b_rows.append({
+                        "Tested_Template_URL": bu,
+                        "Mobile_Score": int(lh_b.get("categories", {}).get("performance", {}).get("score", 0) * 100),
+                        "LCP": aud_b.get("largest-contentful-paint", {}).get("displayValue", "N/A"),
+                        "TBT": aud_b.get("total-blocking-time", {}).get("displayValue", "N/A"),
+                        "CLS": aud_b.get("cumulative-layout-shift", {}).get("displayValue", "N/A")
+                    })
+                except Exception:
+                    b_rows.append({"Tested_Template_URL": bu, "Mobile_Score": 0, "LCP": "Timeout", "TBT": "Timeout", "CLS": "Timeout"})
+                b_prog.progress((idx_b + 1) / max(1, len(b_urls)))
+            b_prog.empty()
+            st.session_state["df_cwv_batch"] = pd.DataFrame(b_rows)
+            st.success(f"✓ Benchmarked {len(b_rows)} page templates!")
+
+    if not st.session_state.get("df_cwv_batch", pd.DataFrame()).empty:
+        st.dataframe(st.session_state["df_cwv_batch"], hide_index=True, use_container_width=True)
 
 # =============================================================================
 # TAB 8: BACKLINKS & DOMAIN AUTHORITY (CRAWLY FREE SEO API)
@@ -4558,7 +4684,7 @@ with tab_report:
         safe_slug = re.sub(r'[^a-zA-Z0-9_-]+', '_', custom_section_label.split("—")[0].strip()).strip("_").lower() or "site_audit"
         safe_logo = get_safe_logo_src(LOGO_URL)
 
-        col_pdf1, col_pdf2 = st.columns(2)
+        col_pdf1, col_pdf2, col_xlsx = st.columns(3)
 
         with col_pdf1:
             st.markdown("### Option A: 1-Page Executive Brief")
@@ -4639,5 +4765,37 @@ with tab_report:
                     data=st.session_state["compiled_dossier_pdf_bytes"],
                     file_name=st.session_state.get("compiled_dossier_filename", "technical_report.pdf"),
                     mime="application/pdf",
+                    use_container_width=True
+                )
+
+        with col_xlsx:
+            st.markdown("### Option C: Master Audit Workbook (.xlsx)")
+            st.caption("Multi-tab Excel spreadsheet with all raw crawl, SEO, schema, link, SERP & AEO tables.")
+            if st.button("Compile Master Excel Workbook (.xlsx)", use_container_width=True):
+                try:
+                    with st.spinner("Building styled multi-tab Excel workbook..."):
+                        xlsx_bytes = build_master_audit_excel(
+                            df_c=df_c,
+                            df_r=st.session_state.get("df_rankings", pd.DataFrame()),
+                            df_a=st.session_state.get("df_aeo", pd.DataFrame()),
+                            df_eq=st.session_state.get("df_equity", pd.DataFrame()),
+                            df_can=st.session_state.get("df_cannibal", pd.DataFrame()),
+                            df_ads=st.session_state.get("df_ads", pd.DataFrame()),
+                            df_broken=st.session_state.get("df_broken_links", pd.DataFrame()),
+                            brand_name=custom_client_name,
+                            scope_label=custom_section_label
+                        )
+                        st.session_state["master_xlsx_bytes"] = xlsx_bytes
+                        st.session_state["master_xlsx_filename"] = f"{clean_host_default}_{safe_slug}_master_audit.xlsx"
+                        st.success("✓ Master Excel Workbook ready!")
+                except Exception as e:
+                    st.error(f"Could not compile Excel workbook: {e}")
+
+            if st.session_state.get("master_xlsx_bytes"):
+                st.download_button(
+                    label="⬇️ Download Master Excel Workbook (.xlsx)",
+                    data=st.session_state["master_xlsx_bytes"],
+                    file_name=st.session_state.get("master_xlsx_filename", "master_audit.xlsx"),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
