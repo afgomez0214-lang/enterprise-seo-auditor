@@ -773,10 +773,212 @@ def verify_internal_links_health(df_crawl, headers, max_links=60):
     df_probed = df_probed.sort_values(by=["sort_pri", "HTTP_Code"]).drop(columns=["sort_pri"]).reset_index(drop=True)
     return df_probed
 
+def analyze_url_structure_and_keywords(df_crawl):
+    """
+    Audits every crawled URL's folder hierarchy, slug hygiene, and keyword alignment against H1/Title:
+    - Detects redundant/duplicate path segments (e.g. /blogs/blog/..., /products/product/..., /services/service/...)
+    - Detects CMS wrapper bloat (/pages/..., /collections/all/products/...) and excessive depth (>3 levels)
+    - Flags uppercase letters, underscores (_), date stamps (/2023/05/), dynamic parameters, and >90 char URLs
+    - Compares URL slug tokens against H1/Meta Title to detect generic slugs (/page-1, /post-123) or missing core keywords
+    - Generates an exact Recommended Clean URL, Recommended Target Keywords, and 301 Redirect migration guidance
+    """
+    if df_crawl is None or df_crawl.empty:
+        return pd.DataFrame()
+
+    stop_words = {
+        "the", "and", "for", "with", "that", "this", "from", "your", "are", "was",
+        "were", "will", "have", "has", "had", "what", "when", "where", "why", "how",
+        "who", "which", "can", "could", "should", "would", "into", "about", "after",
+        "before", "between", "under", "over", "again", "further", "then", "once",
+        "here", "there", "all", "any", "both", "each", "few", "more", "most", "other",
+        "some", "such", "only", "own", "same", "than", "too", "very", "just", "actually",
+        "really", "says", "said", "complete", "guide", "overview", "home", "page"
+    }
+
+    def stem_segment(seg):
+        s = seg.lower().strip()
+        if s.endswith("ies") and len(s) > 4:
+            return s[:-3] + "y"
+        if s.endswith("es") and len(s) > 3 and not s.endswith(("ses", "xes", "zes", "ches", "shes")):
+            return s[:-1]
+        if s.endswith("s") and len(s) > 3 and not s.endswith("ss"):
+            return s[:-1]
+        return s
+
+    rows = []
+    for _, r in df_crawl.iterrows():
+        raw_url = str(r.get("URL", "")).strip()
+        if not raw_url:
+            continue
+        parsed = urlparse(raw_url)
+        scheme_host = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+        path_raw = parsed.path or "/"
+        segments_raw = [p for p in path_raw.split("/") if p]
+        depth = len(segments_raw)
+
+        h1_txt = str(r.get("H1_Text", "")).strip()
+        title_txt = str(r.get("Meta_Title", "")).strip()
+        ref_heading = h1_txt if (h1_txt and h1_txt != "N/A") else (title_txt if (title_txt and title_txt != "Missing") else "")
+        # Strip trailing "| Brand" or "- Brand" from Meta Title if used
+        if ref_heading == title_txt and any(sep in ref_heading for sep in [" | ", " - ", " — "]):
+            ref_heading = re.split(r"\s+[\|\-\—]\s+", ref_heading)[0].strip()
+
+        # Extract meaningful topic keywords from H1 / Title
+        heading_tokens = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", ref_heading) if len(w) >= 3 and w.lower() not in stop_words]
+        # Deduplicate while preserving order
+        seen_ht = set()
+        core_topic_tokens = []
+        for tk in heading_tokens:
+            if tk not in seen_ht:
+                seen_ht.add(tk)
+                core_topic_tokens.append(tk)
+
+        issues = []
+        score = 100
+        cleaned_segments = list(segments_raw)
+
+        # 1. Redundant / Duplicate Path Segments (e.g. /blogs/blog/..., /products/product/...)
+        if len(segments_raw) >= 2:
+            deduped = []
+            prev_stem = None
+            dup_found_pairs = []
+            all_stems_seen = {}
+            for idx_s, seg in enumerate(segments_raw):
+                st_s = stem_segment(seg)
+                if prev_stem and st_s == prev_stem:
+                    dup_found_pairs.append(f"/{segments_raw[idx_s-1]}/{seg}/")
+                    # Keep the cleaner singular or first folder (e.g. prefer 'blog' or 'blogs' consistently)
+                    continue
+                if st_s in all_stems_seen and idx_s < len(segments_raw) - 1:
+                    dup_found_pairs.append(f"repeated '{seg}'")
+                    continue
+                all_stems_seen[st_s] = idx_s
+                deduped.append(seg)
+                prev_stem = st_s
+
+            if dup_found_pairs:
+                issues.append(f"🔴 Redundant Folder Structure ({', '.join(dup_found_pairs)}) — collapses duplicate hierarchy")
+                score -= 28
+                cleaned_segments = deduped
+
+        # 2. CMS Wrapper Prefix Bloat (e.g. /pages/about -> /about, /collections/all/products/x -> /products/x)
+        if len(cleaned_segments) >= 2 and cleaned_segments[0].lower() == "pages":
+            issues.append("🟡 CMS '/pages/' Wrapper Prefix — flattens URL hierarchy for cleaner authority")
+            score -= 10
+            cleaned_segments = cleaned_segments[1:]
+        elif len(cleaned_segments) >= 4 and cleaned_segments[0].lower() == "collections" and cleaned_segments[2].lower() == "products":
+            issues.append("🟡 Nested Shopify Collection Path (/collections/*/products/*) — canonicalize to /products/")
+            score -= 15
+            cleaned_segments = ["products", cleaned_segments[-1]]
+
+        # 3. Excessive Folder Depth (> 3 levels)
+        if depth >= 4:
+            issues.append(f"⚠️ Deep Folder Nesting ({depth} levels) — keep key pages within 2–3 levels of root")
+            score -= 12
+
+        # 4. Uppercase Characters in Path
+        if any(c.isupper() for c in path_raw):
+            issues.append("🟡 Uppercase Characters in URL — enforce lowercase to prevent duplicate URL splits")
+            score -= 10
+
+        # 5. Underscores or Encoded Spaces
+        if "_" in path_raw or "%20" in path_raw:
+            issues.append("🟡 Underscores/Spaces in Slug — replace '_' with hyphens '-' for Google word parsing")
+            score -= 12
+
+        # 6. Date Stamps in Evergreen URLs (/2022/08/ or /2023/)
+        if re.search(r"/(?:19|20)\d{2}/(?:0[1-9]|1[0-2])/", path_raw):
+            issues.append("🟡 Date Stamp in URL Path — evergreen posts should omit year/month folders")
+            score -= 10
+
+        # 7. Query Parameters or Legacy File Extensions (.html, .php, .aspx)
+        if parsed.query:
+            issues.append(f"🟡 Query Parameters in URL (?{parsed.query[:25]}) — use clean static path")
+            score -= 10
+        if re.search(r"\.(?:html|htm|php|aspx|jsp)$", path_raw, re.I):
+            issues.append("🟡 Legacy File Extension (.html/.php) — strip file extensions for clean URLs")
+            score -= 8
+
+        # 8. Slug Analysis (Generic Slugs, Conversational Filler, & Keyword Alignment)
+        leaf_slug = cleaned_segments[-1] if cleaned_segments else ""
+        leaf_slug_clean = re.sub(r"\.(?:html|htm|php|aspx|jsp)$", "", leaf_slug, flags=re.I)
+        leaf_slug_clean = leaf_slug_clean.replace("_", "-").replace("%20", "-").lower()
+        slug_words = [w for w in re.findall(r"[a-z0-9]+", leaf_slug_clean) if w]
+
+        generic_slug_patterns = re.compile(r"^(?:page|post|article|product|service|item|untitled|home|test|new-page|copy-of)(?:-?\d+)?$", re.I)
+        if leaf_slug_clean and generic_slug_patterns.match(leaf_slug_clean):
+            issues.append(f"🔴 Generic Non-Descriptive Slug ('/{leaf_slug_clean}') — contains zero target keywords")
+            score -= 25
+            if core_topic_tokens:
+                leaf_slug_clean = "-".join(core_topic_tokens[:5])
+        elif leaf_slug_clean and core_topic_tokens:
+            slug_set = set(slug_words)
+            overlap = [t for t in core_topic_tokens[:4] if t in slug_set]
+            if len(overlap) == 0 and len(core_topic_tokens) >= 2:
+                issues.append("🟠 Slug-to-H1 Keyword Mismatch — URL slug lacks primary page topic keywords")
+                score -= 16
+                leaf_slug_clean = "-".join(core_topic_tokens[:5])
+            elif len(slug_words) >= 7:
+                # Trim conversational filler words while preserving core keyword phrase
+                concise_words = [w for w in slug_words if w not in stop_words]
+                if len(concise_words) >= 3 and len(concise_words) < len(slug_words):
+                    issues.append(f"🟡 Long Conversational Slug ({len(slug_words)} words) — trim stop-words for higher SERP CTR")
+                    score -= 8
+                    leaf_slug_clean = "-".join(concise_words[:6])
+
+        if len(raw_url) > 95:
+            issues.append(f"🟡 Long URL ({len(raw_url)} chars) — keep under 75–90 chars to avoid SERP truncation")
+            score -= 6
+
+        # Assemble Recommended Clean URL
+        if cleaned_segments:
+            rec_segs = [re.sub(r"[^a-z0-9\-]+", "-", s.lower().replace("_", "-")).strip("-") for s in cleaned_segments[:-1]]
+            rec_leaf = re.sub(r"[^a-z0-9\-]+", "-", leaf_slug_clean).strip("-")
+            rec_path = "/" + "/".join([s for s in rec_segs + [rec_leaf] if s])
+        else:
+            rec_path = "/"
+        recommended_url = f"{scheme_host}{rec_path}" if scheme_host else rec_path
+
+        # Generate Keyword Recommendations for this page
+        if core_topic_tokens:
+            primary_kw = " ".join(core_topic_tokens[:4])
+            secondary_kws = []
+            if len(core_topic_tokens) >= 3:
+                secondary_kws.append(" ".join(core_topic_tokens[:3]))
+            if any(b in path_raw.lower() for b in ["/blog", "/article", "/news", "/guide"]):
+                secondary_kws.append(f"{primary_kw} guide")
+                secondary_kws.append(f"is {primary_kw} worth it" if "worth" in ref_heading.lower() else f"how {primary_kw} works")
+            else:
+                secondary_kws.append(f"{primary_kw} services")
+                secondary_kws.append(f"best {primary_kw}")
+            kw_recs_str = f"Primary: {primary_kw} | Secondary: {', '.join(list(dict.fromkeys(secondary_kws))[:2])}"
+        else:
+            primary_kw = "Homepage / Brand Root" if depth == 0 else " ".join(slug_words[:4]) or "General Page"
+            kw_recs_str = f"Primary: {primary_kw}"
+
+        is_changed = (recommended_url.rstrip("/") != raw_url.split("?")[0].rstrip("/"))
+        score = max(15, min(100, score))
+
+        rows.append({
+            "Current_URL": raw_url,
+            "URL_Health_Score": score,
+            "Folder_Depth": depth,
+            "Structural_Issues": " | ".join(issues) if issues else "🟢 Clean & SEO-Friendly URL",
+            "Detected_Page_Topic": primary_kw,
+            "Recommended_Clean_URL": recommended_url if is_changed else "✓ Keep Current URL (Optimal)",
+            "Recommended_Target_Keywords": kw_recs_str,
+            "Migration_Action": "301 Redirect Old URL -> New URL + Update Internal Links & Canonical" if is_changed else "No Change Required"
+        })
+
+    df_u = pd.DataFrame(rows)
+    if not df_u.empty:
+        df_u = df_u.sort_values(by=["URL_Health_Score", "Folder_Depth"], ascending=[True, False]).reset_index(drop=True)
+    return df_u
+
 def build_master_audit_excel(
     df_c, df_r, df_a, df_eq, df_can, df_ads, df_broken, brand_name, scope_label,
     df_serp_ads=None, df_brand_serp=None, df_cwv_batch=None, crawly_data=None,
-    df_mentions=None, robots_data=None, first_party_summary=None
+    df_mentions=None, robots_data=None, first_party_summary=None, df_url_audit=None
 ):
     """Generates a comprehensive multi-tab styled Excel workbook (.xlsx) integrating every audit module."""
     import openpyxl
@@ -891,6 +1093,11 @@ def build_master_audit_excel(
         if weak_agg:
             ws_st_w = wb.create_sheet(title="Tech_Stack_Weaknesses")
             style_worksheet(ws_st_w, pd.DataFrame(list(weak_agg.values())), title_banner="Tech Stack Weaknesses & Optimization Opportunities")
+
+    eff_url_df = df_url_audit if (df_url_audit is not None and not df_url_audit.empty) else analyze_url_structure_and_keywords(df_c)
+    if eff_url_df is not None and not eff_url_df.empty:
+        ws_url = wb.create_sheet(title="URL_Structure_Audit")
+        style_worksheet(ws_url, eff_url_df, title_banner="URL Structure, Folder Hygiene & Keyword Alignment Audit")
 
     if robots_data and robots_data.get("ai_bots"):
         ws_rob = wb.create_sheet(title="Robots_AI_Bots")
@@ -1319,7 +1526,7 @@ with st.sidebar:
             "df_equity", "suggested_organic_kws", "suggested_aeo_prompts",
             "df_organic_suggestions", "df_aeo_suggestions", "detected_industry",
             "sec_headers", "cwv_metrics", "crux_metrics", "safe_browsing",
-            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64", "df_brand_serp", "brand_sitelinks", "brand_kg_panel", "cwv_tested_url", "cwv_desktop_metrics", "df_cwv_batch", "robots_audit_data", "df_broken_links", "master_xlsx_bytes", "first_party_summary", "df_gsc_quickwins", "df_ga4_top_pages"
+            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "df_url_audit", "url_ai_recommendations", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64", "df_brand_serp", "brand_sitelinks", "brand_kg_panel", "cwv_tested_url", "cwv_desktop_metrics", "df_cwv_batch", "robots_audit_data", "df_broken_links", "master_xlsx_bytes", "first_party_summary", "df_gsc_quickwins", "df_ga4_top_pages"
         ]
         for k in keys_to_clear:
             st.session_state.pop(k, None)
@@ -1379,6 +1586,8 @@ if "cwv_desktop_metrics" not in st.session_state: st.session_state["cwv_desktop_
 if "df_cwv_batch" not in st.session_state: st.session_state["df_cwv_batch"] = pd.DataFrame()
 if "robots_audit_data" not in st.session_state: st.session_state["robots_audit_data"] = {}
 if "df_broken_links" not in st.session_state: st.session_state["df_broken_links"] = pd.DataFrame()
+if "df_url_audit" not in st.session_state: st.session_state["df_url_audit"] = pd.DataFrame()
+if "url_ai_recommendations" not in st.session_state: st.session_state["url_ai_recommendations"] = ""
 if "first_party_summary" not in st.session_state: st.session_state["first_party_summary"] = []
 if "df_gsc_quickwins" not in st.session_state: st.session_state["df_gsc_quickwins"] = pd.DataFrame()
 if "df_ga4_top_pages" not in st.session_state: st.session_state["df_ga4_top_pages"] = pd.DataFrame()
@@ -1882,6 +2091,7 @@ with tab_arch:
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
             st.session_state["is_thin_site"] = (len(df_crawl) <= 2)
+            st.session_state["df_url_audit"] = analyze_url_structure_and_keywords(df_crawl)
 
             # G. Topical Categorization via Dynamic Gemini API
             if gemini_key and not df_crawl.empty:
@@ -2015,13 +2225,14 @@ Respond strictly in valid JSON format:
         ck3.metric("Avg. AEO Readiness Score", f"{avg_aeo_ready}/100", help="Measures direct answer structure, H2/H3 depth, lists/tables, FAQ presence & schemas.")
         ck4.metric("Sitemaps Unpacked", f"{len(st.session_state.get('discovered_sitemaps', []))} XML files")
 
-        xray_tab1, xray_tab2, xray_tab3, xray_tab4, xray_tab5, xray_tab6 = st.tabs([
+        xray_tab1, xray_tab2, xray_tab3, xray_tab4, xray_tab5, xray_tab6, xray_tab7 = st.tabs([
             "🏷️ 1. Meta Title & Meta Description Matrix",
             "📑 2. H1–H6 Headings & Image Alt Text Audit",
             "🔎 3. Single-Page Deep X-Ray & AI Copywriter",
             "🛠️ 4. Installed Apps & Tech Stack (Wappalyzer)",
-            "🤖 5. Robots.txt, AI Bots & Broken Links",
-            "🗺️ 6. Unpacked XML Sitemaps Log"
+            "🔗 5. URL Structure & Keyword Audit",
+            "🤖 6. Robots.txt, AI Bots & Broken Links",
+            "🗺️ 7. Unpacked XML Sitemaps Log"
         ])
 
         with xray_tab1:
@@ -2150,6 +2361,82 @@ Provide an actionable, publication-ready optimization plan with:
                 st.dataframe(pd.DataFrame(list(all_weaknesses_map.values())), hide_index=True, use_container_width=True)
 
         with xray_tab5:
+            st.markdown("##### 🔗 URL Structure, Folder Hierarchy & Keyword Alignment Audit")
+            st.markdown("""
+            <div class="guide-box">
+                <strong>🎯 What This Audits:</strong> Detects redundant/duplicate path folders (such as <code>/blogs/blog/...</code> or <code>/products/product/...</code>), CMS wrapper bloat (<code>/pages/...</code>), deep nesting (&gt;3 levels), uppercase/underscore slugs, and mismatches between a page's H1/Title topic and its URL slug—generating clean target URLs, keyword recommendations, and 301 redirect rules.
+            </div>
+            """, unsafe_allow_html=True)
+
+            df_url_aud = st.session_state.get("df_url_audit", pd.DataFrame())
+            if df_url_aud.empty and not df.empty:
+                df_url_aud = analyze_url_structure_and_keywords(df)
+                st.session_state["df_url_audit"] = df_url_aud
+
+            if not df_url_aud.empty:
+                # Filter to match active search bar if used
+                disp_url_aud = df_url_aud[df_url_aud["Current_URL"].isin(display_df["URL"])] if not display_df.empty else df_url_aud
+                avg_u_score = int(disp_url_aud["URL_Health_Score"].mean()) if not disp_url_aud.empty else 100
+                flagged_u_cnt = int((disp_url_aud["Migration_Action"] != "No Change Required").sum())
+                dup_folder_cnt = int(disp_url_aud["Structural_Issues"].str.contains("Redundant Folder", na=False).sum())
+
+                uk1, uk2, uk3, uk4 = st.columns(4)
+                uk1.metric("Avg. URL Structure Score", f"{avg_u_score}/100")
+                uk2.metric("URLs Needing Optimization", f"{flagged_u_cnt}/{len(disp_url_aud)}", delta="301 Redirects Needed" if flagged_u_cnt > 0 else "All Clean", delta_color="inverse" if flagged_u_cnt > 0 else "normal")
+                uk3.metric("Redundant Folder Paths", f"{dup_folder_cnt} URLs", help="e.g. /blogs/blog/... or /products/product/...")
+                uk4.metric("Avg. Folder Depth", f"{disp_url_aud['Folder_Depth'].mean():.1f} levels")
+
+                st.dataframe(
+                    disp_url_aud,
+                    column_config={
+                        "Current_URL": st.column_config.LinkColumn("Current Audited URL"),
+                        "URL_Health_Score": st.column_config.ProgressColumn("URL Score", format="%d/100", min_value=0, max_value=100),
+                        "Folder_Depth": st.column_config.NumberColumn("Depth", format="%d"),
+                        "Structural_Issues": st.column_config.TextColumn("Detected URL & Slug Findings"),
+                        "Detected_Page_Topic": st.column_config.TextColumn("Core Page Topic"),
+                        "Recommended_Clean_URL": st.column_config.TextColumn("Recommended Clean URL"),
+                        "Recommended_Target_Keywords": st.column_config.TextColumn("Recommended Target Keywords"),
+                        "Migration_Action": st.column_config.TextColumn("SEO Migration Rule")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                st.warning("⚠️ **Important SEO Migration Rule:** Never change live indexed URLs without deploying **301 Permanent Redirects** from the old URL to the new URL, updating internal links, and updating `<link rel='canonical'>` tags so existing rankings and backlinks transfer cleanly.")
+
+                col_u1, col_u2 = st.columns(2)
+                with col_u1:
+                    st.download_button(
+                        label="⬇️ Download URL Structure & 301 Redirect Map (CSV)",
+                        data=disp_url_aud.to_csv(index=False),
+                        file_name=f"url_structure_audit_{urlparse(st.session_state.get('target_domain', 'site')).netloc}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                with col_u2:
+                    if st.button("🤖 Generate AI URL & Keyword Architecture Plan (Gemini)", key="btn_url_ai_plan", use_container_width=True):
+                        if not gemini_key:
+                            st.error("Please add your Gemini API Key in the sidebar.")
+                        else:
+                            with st.spinner("Analyzing URL hierarchy, slugs, and keyword clusters with Gemini..."):
+                                sample_u_rows = disp_url_aud[["Current_URL", "Structural_Issues", "Detected_Page_Topic", "Recommended_Clean_URL"]].head(20).to_dict(orient="records")
+                                u_prompt = f"""You are a Senior Technical SEO & Information Architecture Strategist at Connext Global Solutions.
+Review these audited URLs, structural issues, and page topics:
+{json.dumps(sample_u_rows, indent=2)}
+
+Provide a concise, executive-ready URL Architecture & Keyword Optimization Plan:
+1. **URL Structure & Taxonomy Diagnosis:** Explain structural flaws (such as redundant folders like /blogs/blog/, CMS prefixes, or overly long slugs) and how fixing them improves crawl efficiency and topical authority.
+2. **Priority 301 Redirect & Slug Rewrite Table:** List the top URLs to restructure with their exact Recommended Target URL, Primary Keyword, and 2 Secondary Long-Tail Keywords.
+3. **Safe Migration Checklist:** 4 bullet points covering 301 redirects, canonical updates, XML sitemap refresh, and internal link updates."""
+                                ai_u_txt, mod_u = query_gemini_dynamic(u_prompt, gemini_key)
+                                if ai_u_txt:
+                                    st.session_state["url_ai_recommendations"] = ai_u_txt
+                                    st.success(f"✓ URL & Keyword Architecture Plan Generated ({mod_u})!")
+
+                if st.session_state.get("url_ai_recommendations"):
+                    st.markdown(st.session_state["url_ai_recommendations"])
+
+        with xray_tab6:
             st.markdown("##### 🤖 Robots.txt & AI Crawler Governance (GPTBot, ClaudeBot, PerplexityBot, Google-Extended)")
             rob_data = st.session_state.get("robots_audit_data", {})
             if rob_data.get("ai_bots"):
@@ -2182,7 +2469,7 @@ Provide an actionable, publication-ready optimization plan with:
             if not st.session_state.get("df_broken_links", pd.DataFrame()).empty:
                 st.dataframe(st.session_state["df_broken_links"], hide_index=True, use_container_width=True)
 
-        with xray_tab6:
+        with xray_tab7:
             st.markdown("##### Unpacked XML Sitemap Index & Category Discovery Log")
             if st.session_state.get("discovered_sitemaps"):
                 st.dataframe(pd.DataFrame(st.session_state["discovered_sitemaps"]), use_container_width=True)
@@ -3855,6 +4142,18 @@ with tab_dashboard:
                 """)
             dynamic_plan.append({"Priority": "Priority 1 (Critical)", "Initiative": "Fix H1 Word Concatenation", "Action": f"Insert whitespace delimiters in H1 templates across {mashed_count} affected URLs.", "Effort": "Low (1 hour)", "Projected Impact": "Restores clean keyword indexing in Google"})
 
+        df_u_dash = st.session_state.get("df_url_audit", pd.DataFrame())
+        if df_u_dash.empty and not df_c.empty:
+            df_u_dash = analyze_url_structure_and_keywords(df_c)
+        u_issues_cnt = int((df_u_dash["Migration_Action"] != "No Change Required").sum()) if not df_u_dash.empty else 0
+        if u_issues_cnt > 0:
+            with st.expander(f"⚠️ URL Structure & Slug Optimization Opportunities ({u_issues_cnt} URLs Flagged)", expanded=False):
+                st.markdown(f"""
+                * **Business Impact:** 🟡 **Information Architecture & CTR** — {u_issues_cnt} URL(s) contain redundant nested folders (e.g. `/blogs/blog/...`), CMS prefixes, or unoptimized keyword slugs.
+                * **Action Required:** Review **Tab 1 → Sub-Tab 5 (URL Structure & Keyword Audit)** to deploy clean slugs with 301 redirects.
+                """)
+            dynamic_plan.append({"Priority": "Priority 2 (High Impact)", "Initiative": "Optimize Redundant URL Folders & Keyword Slugs", "Action": f"Clean up {u_issues_cnt} suboptimal URL structures with 301 redirects and updated internal links.", "Effort": "Low (1-2 days)", "Projected Impact": "Improves crawl clarity, keyword relevance, and SERP CTR"})
+
         if score_a11y < 85:
             with st.expander(f"⚠️ Web Accessibility (WCAG 2.1 AA) Gaps (Average Score: {score_a11y}/100)", expanded=False):
                 st.markdown(f"""
@@ -4012,6 +4311,12 @@ def build_executive_summary_1page_html(
     if mashed_count > 0:
         mashed_urls = ", ".join([esc(urlparse(u).path or "/") for u in df_c[df_c["Concatenated_H1"]]["URL"].head(2)])
         priority_fixes.append(f"<strong>Fix Merged Headline Words ({mashed_count} Page(s)):</strong> Styling on <code>{mashed_urls}</code> removes spaces between words in the main headline.")
+    df_u_1p = analyze_url_structure_and_keywords(df_c)
+    u_fix_1p = df_u_1p[df_u_1p["Migration_Action"] != "No Change Required"] if not df_u_1p.empty else pd.DataFrame()
+    if not u_fix_1p.empty:
+        sample_u_bad = esc(urlparse(u_fix_1p["Current_URL"].iloc[0]).path or "/")
+        sample_u_good = esc(urlparse(u_fix_1p["Recommended_Clean_URL"].iloc[0]).path or "/")
+        priority_fixes.append(f"<strong>Clean Up {len(u_fix_1p)} Suboptimal URL Path(s):</strong> For example, simplify <code>{sample_u_bad}</code> to <code>{sample_u_good}</code> (with a 301 redirect) for cleaner keyword alignment.")
     if miss_alt_total > 0:
         priority_fixes.append(f"<strong>Add Alt Descriptions to {miss_alt_total} Image(s):</strong> Descriptive alt tags improve image search visibility and screen-reader accessibility.")
     if has_serp and invis_pct > 40:
@@ -4659,6 +4964,36 @@ def build_executive_dossier_html(
         roadmap.append(("Priority 1 (Quick Fix)", "Fix H1 Headline Spacing", f"Add spaces between styled text spans in the H1 template on {mashed_count} page(s).", "Ensures Google reads headline keywords cleanly"))
     else:
         strengths.append("<strong>Clean Page Headlines:</strong> All main H1 headings are properly spaced and readable.")
+
+    df_u_dos = analyze_url_structure_and_keywords(df_c)
+    u_fix_dos = df_u_dos[df_u_dos["Migration_Action"] != "No Change Required"] if not df_u_dos.empty else pd.DataFrame()
+    url_structure_pdf_html = ""
+    if not u_fix_dos.empty:
+        weaknesses.append(f"<strong>Suboptimal URL Structure on {len(u_fix_dos)} Page(s):</strong> Redundant folders (e.g. <code>/blogs/blog/...</code>) or unoptimized slugs dilute keyword focus.")
+        roadmap.append(("Priority 2 (URL Hygiene)", "Streamline URL Slugs & 301 Redirects", f"Restructure {len(u_fix_dos)} suboptimal URL path(s) to clean keyword slugs with 301 redirects.", "Improves crawl clarity, keyword alignment, and SERP CTR"))
+        u_rows_pdf = ""
+        for _, ru in u_fix_dos.head(8).iterrows():
+            iss_clean = str(ru.get("Structural_Issues", "")).replace("🔴 ", "").replace("🟡 ", "").replace("🟠 ", "").replace("⚠️ ", "")
+            u_rows_pdf += f"""<tr>
+                <td style="word-break:break-all; font-size:6.4pt; font-family:monospace;">{esc(clean_display_url(ru.get('Current_URL', '')))}</td>
+                <td style="font-size:6.5pt;">{esc(iss_clean)}</td>
+                <td style="word-break:break-all; font-size:6.4pt; font-family:monospace; color:#16a34a; font-weight:bold;">{esc(clean_display_url(ru.get('Recommended_Clean_URL', '')))}</td>
+                <td style="font-size:6.4pt;">{esc(ru.get('Recommended_Target_Keywords', ''))}</td>
+            </tr>"""
+        url_structure_pdf_html = f"""
+        <div class="sub-header">URL Structure, Folder Hygiene &amp; Keyword Optimization Review</div>
+        <p class="intro-note">Auditing URL paths for redundant folders (such as <code>/blogs/blog/...</code>), CMS prefixes, and slug-to-topic keyword alignment. Always deploy 301 redirects when updating live URLs.</p>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:27%;">Current URL</th>
+                    <th style="width:25%;">Detected URL Finding</th>
+                    <th style="width:26%;">Recommended Clean URL</th>
+                    <th style="width:22%;">Target Keywords</th>
+                </tr>
+            </thead>
+            <tbody>{u_rows_pdf}</tbody>
+        </table>"""
 
     if miss_alt_cnt > 0:
         weaknesses.append(f"<strong>Missing Image Alt Text ({miss_alt_cnt} of {total_imgs_cnt} Images):</strong> Images without alt descriptions miss image search traffic and reduce screen-reader accessibility.")
@@ -5425,6 +5760,8 @@ def build_executive_dossier_html(
         </tbody>
     </table>
 
+    {url_structure_pdf_html}
+
     {tech_stack_html}
 
     <div class="sub-header">Technical Trust, Security &amp; AI Crawler Governance</div>
@@ -5669,7 +6006,8 @@ with tab_report:
                             crawly_data=st.session_state.get("crawly_data", {}),
                             df_mentions=st.session_state.get("df_mentions", pd.DataFrame()),
                             robots_data=st.session_state.get("robots_audit_data", {}),
-                            first_party_summary=st.session_state.get("first_party_summary", [])
+                            first_party_summary=st.session_state.get("first_party_summary", []),
+                            df_url_audit=st.session_state.get("df_url_audit", pd.DataFrame())
                         )
                         st.session_state["master_xlsx_bytes"] = xlsx_bytes
                         st.session_state["master_xlsx_filename"] = f"{clean_host_default}_{safe_slug}_master_audit.xlsx"
