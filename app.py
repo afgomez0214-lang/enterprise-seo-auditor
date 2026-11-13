@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 import html
 import base64
 from urllib.parse import urlparse, urljoin, parse_qs, urlencode, urlunparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import json
 import os
@@ -122,13 +122,15 @@ def is_valid_html_page_url(url, root_netloc):
         return False
     return True
 
-def discover_target_urls(root, target_site, filter_term, crawl_limit, headers):
+def discover_target_urls(root, target_site, filter_term, crawl_limit, headers, whole_website=False):
     """
     Recursively unpacks XML Sitemap Indexes (including Shopify/CMS child sitemaps with ?from=... query strings),
     extracts inner HTML pages, applies category/slug filtering, and spiders internal category links as fallback.
+    Supports both custom page caps (up to 500) and full 'Whole Website' mode.
     """
     root_netloc = urlparse(root).netloc.replace("www.", "")
     filter_clean = filter_term.strip().lower()
+    effective_cap = 2500 if whole_website else crawl_limit
     
     seed_sitemaps = [
         f"{root}/sitemap.xml",
@@ -208,10 +210,10 @@ def discover_target_urls(root, target_site, filter_term, crawl_limit, headers):
         for pu in p_urls:
             if is_valid_html_page_url(pu, root_netloc):
                 discovered_html_urls.append((pu, sm))
-        if len(discovered_html_urls) >= crawl_limit * 4 and not child_sitemaps_queue:
+        if not whole_website and len(discovered_html_urls) >= effective_cap * 4 and not child_sitemaps_queue:
             break
 
-    # Step B: Recursively unpack child sitemaps (e.g. sitemap_pages_1.xml?from=..., sitemap_products_1.xml?from=...)
+    # Step B: Recursively unpack child sitemaps (supports nested sitemap indexes & Whole Website mode)
     if child_sitemaps_queue:
         if filter_clean:
             terms = [t.strip().strip("/") for t in filter_clean.split(",") if t.strip()]
@@ -223,7 +225,11 @@ def discover_target_urls(root, target_site, filter_term, crawl_limit, headers):
             other_children = [cs for cs in child_sitemaps_queue if cs not in priority_children]
             ordered_children = priority_children + other_children
 
-        for cs in ordered_children[:18]:
+        max_child_sitemaps = 120 if (whole_website or effective_cap > 80) else 25
+        idx_cs = 0
+        while idx_cs < len(ordered_children) and len(visited_sitemaps) < max_child_sitemaps:
+            cs = ordered_children[idx_cs]
+            idx_cs += 1
             if cs in visited_sitemaps:
                 continue
             visited_sitemaps.add(cs)
@@ -234,16 +240,18 @@ def discover_target_urls(root, target_site, filter_term, crawl_limit, headers):
                 "Child_Sitemaps_Found": len(sub_sms),
                 "HTML_Pages_Extracted": len(sub_pages)
             })
+            for nested_sm in sub_sms:
+                if nested_sm not in visited_sitemaps and nested_sm not in ordered_children:
+                    ordered_children.append(nested_sm)
             for pu in sub_pages:
                 if is_valid_html_page_url(pu, root_netloc):
                     discovered_html_urls.append((pu, cs))
-            if len(discovered_html_urls) >= crawl_limit * 6:
+            if not whole_website and len(discovered_html_urls) >= effective_cap * 6:
                 break
 
     # Step C: Filter discovered HTML pages by category / slug / keyword filter
     filtered_urls = []
     seen_u = set()
-    # Always include target_site root if no filter is set
     if not filter_clean:
         norm_target = target_site.split("#")[0].rstrip("/") if target_site.rstrip("/") != root.rstrip("/") else root
         seen_u.add(norm_target)
@@ -263,19 +271,23 @@ def discover_target_urls(root, target_site, filter_term, crawl_limit, headers):
                 seen_u.add(clean_pu)
                 filtered_urls.append(pu)
 
-    # Step D: Live HTML Spider Fallback (Crawls homepage & category pages for internal links)
-    if len(filtered_urls) < crawl_limit:
-        spider_seeds = [target_site, root]
+    # Step D: Live HTML Spider Fallback (Breadth-first spidering across internal pages when needed)
+    if len(filtered_urls) < effective_cap:
+        spider_queue = [target_site, root]
         if filter_clean:
             for t in [x.strip().strip("/") for x in filter_clean.split(",") if x.strip()]:
                 if not t.startswith("http"):
-                    spider_seeds.insert(0, f"{root}/{t}")
-        for f_u in list(filtered_urls)[:3]:
-            if f_u not in spider_seeds:
-                spider_seeds.append(f_u)
+                    spider_queue.insert(0, f"{root}/{t}")
+        for f_u in list(filtered_urls)[:10]:
+            if f_u not in spider_queue:
+                spider_queue.append(f_u)
 
         visited_spider = set()
-        for s_url in spider_seeds[:5]:
+        max_spider_pages = 45 if (whole_website or effective_cap > 80) else 8
+        q_idx = 0
+        while q_idx < len(spider_queue) and len(visited_spider) < max_spider_pages and len(filtered_urls) < effective_cap:
+            s_url = spider_queue[q_idx]
+            q_idx += 1
             if s_url in visited_spider:
                 continue
             visited_spider.add(s_url)
@@ -291,18 +303,22 @@ def discover_target_urls(root, target_site, filter_term, crawl_limit, headers):
                                 if not filter_clean:
                                     seen_u.add(norm_u)
                                     filtered_urls.append(full_u)
+                                    if len(spider_queue) < max_spider_pages * 2:
+                                        spider_queue.append(full_u)
                                 else:
                                     terms = [t.strip() for t in filter_clean.split(",") if t.strip()]
                                     if any(t in full_u.lower() for t in terms):
                                         seen_u.add(norm_u)
                                         filtered_urls.append(full_u)
+                                        if len(spider_queue) < max_spider_pages * 2:
+                                            spider_queue.append(full_u)
             except Exception:
                 continue
 
     if not filtered_urls:
         filtered_urls = [target_site]
 
-    return filtered_urls[:crawl_limit], unpacked_sitemaps_log
+    return filtered_urls[:effective_cap], unpacked_sitemaps_log
 
 def calculate_flesch_readability(text):
     """Calculates Flesch Reading Ease score (0-100) from page text."""
@@ -399,6 +415,18 @@ def extract_all_schemas_from_soup(soup):
             block_count += 1
             found_types.append(itype.split("schema.org/")[-1].strip("/"))
 
+    # 3. Also check RDFa typeof attributes (vocab="https://schema.org/")
+    for tag in soup.find_all(attrs={"typeof": True}):
+        vocab = str(tag.get("vocab", "")).lower()
+        parent_vocab = tag.find_parent(attrs={"vocab": True})
+        p_vocab_str = str(parent_vocab.get("vocab", "")).lower() if parent_vocab else ""
+        if "schema.org" in vocab or "schema.org" in p_vocab_str:
+            for tv in str(tag.get("typeof", "")).split():
+                clean_tv = tv.split("/")[-1].strip()
+                if clean_tv and clean_tv[0].isupper():
+                    block_count += 1
+                    found_types.append(clean_tv)
+
     unique_types = sorted(list(set([t for t in found_types if t])))
     has_rich = any(t in RICH_COMMERCIAL_SCHEMAS for t in unique_types)
     has_aeo = any(t in AEO_ANSWER_SCHEMAS for t in unique_types)
@@ -418,6 +446,183 @@ def extract_all_schemas_from_soup(soup):
         plain_summary = "No Schema Markup (Invisible to AI Knowledge Graph)"
 
     return block_count, unique_types, has_rich, has_aeo, tier, plain_summary
+
+TECH_FINGERPRINTS = [
+    {"name": "Shopify", "category": "Ecommerce / CMS", "weight": "Medium", "html": [r"cdn\.shopify\.com", r"Shopify\.theme", r"shopify-section"], "headers": ["x-shopify-stage", "x-sorting-hat-shopid"]},
+    {"name": "WordPress", "category": "CMS", "weight": "Medium", "html": [r"/wp-content/", r"/wp-includes/"], "meta_gen": r"WordPress\s*([\d\.]+)?"},
+    {"name": "Webflow", "category": "CMS", "weight": "Light", "html": [r"assets\.website-files\.com", r"assets-global\.website-files\.com", r"data-wf-site"], "meta_gen": r"Webflow"},
+    {"name": "HubSpot CMS", "category": "CMS & Marketing", "weight": "Heavy", "html": [r"hs-scripts\.com", r"hubspot\.com", r"hs-banner"], "meta_gen": r"HubSpot"},
+    {"name": "Wix", "category": "CMS", "weight": "Heavy", "html": [r"static\.wixstatic\.com", r"wix-code"], "meta_gen": r"Wix\.com"},
+    {"name": "Squarespace", "category": "CMS", "weight": "Medium", "html": [r"static1\.squarespace\.com", r"Static\.SQUARESPACE_CONTEXT"]},
+    {"name": "Next.js", "category": "Web Framework", "weight": "Light", "html": [r"__NEXT_DATA__", r"/_next/static/"], "headers": ["x-nextjs-cache", "x-vercel-id"]},
+    {"name": "React", "category": "JS Framework", "weight": "Medium", "html": [r"react-dom", r"data-reactroot", r"__REACT_DEVTOOLS"]},
+    {"name": "Vue.js", "category": "JS Framework", "weight": "Light", "html": [r"data-v-[a-f0-9]+", r"vue\.runtime", r"__VUE__"]},
+    {"name": "jQuery", "category": "JS Library", "weight": "Medium", "html": [r"jquery(?:-[\d\.]+)?(?:\.min)?\.js"]},
+    {"name": "Google Tag Manager", "category": "Tag Manager", "weight": "Medium", "html": [r"googletagmanager\.com/gtm\.js\?id=(GTM-[A-Z0-9]+)"]},
+    {"name": "Google Analytics 4 (GA4)", "category": "Analytics", "weight": "Medium", "html": [r"googletagmanager\.com/gtag/js\?id=(G-[A-Z0-9]+)", r"gtag\(\s*['\"]config['\"]\s*,\s*['\"](G-[A-Z0-9]+)['\"]"]},
+    {"name": "Microsoft Clarity", "category": "Heatmaps & Session Replay", "weight": "Medium", "html": [r"clarity\.ms/tag/"]},
+    {"name": "Hotjar", "category": "Heatmaps & Session Replay", "weight": "Heavy", "html": [r"static\.hotjar\.com", r"hjSetting"]},
+    {"name": "Contentsquare", "category": "Heatmaps & Session Replay", "weight": "Heavy", "html": [r"contentsquare\.net"]},
+    {"name": "Segment", "category": "Customer Data Platform", "weight": "Medium", "html": [r"cdn\.segment\.com/analytics\.js"]},
+    {"name": "Meta (Facebook) Pixel", "category": "Advertising Pixel", "weight": "Medium", "html": [r"connect\.facebook\.net/.*/fbevents\.js", r"fbq\(\s*['\"]init['\"]"]},
+    {"name": "LinkedIn Insight Tag", "category": "Advertising Pixel", "weight": "Medium", "html": [r"snap\.licdn\.com/li\.lms-analytics", r"_linkedin_partner_id"]},
+    {"name": "Google Ads Conversion / Remarketing", "category": "Advertising Pixel", "weight": "Medium", "html": [r"googleadservices\.com/pagead/conversion", r"AW-[0-9]+"]},
+    {"name": "TikTok Pixel", "category": "Advertising Pixel", "weight": "Medium", "html": [r"analytics\.tiktok\.com"]},
+    {"name": "Klaviyo", "category": "Email & Popups", "weight": "Heavy", "html": [r"static\.klaviyo\.com", r"klaviyo\.js"]},
+    {"name": "Intercom", "category": "Live Chat", "weight": "Heavy", "html": [r"widget\.intercom\.io", r"intercomSettings"]},
+    {"name": "Drift", "category": "Live Chat", "weight": "Heavy", "html": [r"js\.driftt\.com", r"drift\.load"]},
+    {"name": "Zendesk Chat", "category": "Live Chat", "weight": "Heavy", "html": [r"static\.zdassets\.com", r"zE\("]},
+    {"name": "Yotpo Reviews", "category": "Reviews & UGC", "weight": "Heavy", "html": [r"staticw2\.yotpo\.com"]},
+    {"name": "Judge.me Reviews", "category": "Reviews & UGC", "weight": "Light", "html": [r"cdn\.judge\.me"]},
+    {"name": "Recharge Subscriptions", "category": "Subscriptions", "weight": "Medium", "html": [r"rechargeapps\.com"]},
+    {"name": "Yoast SEO", "category": "SEO Plugin", "weight": "Light", "html": [r"yoast-schema-graph", r"This site is optimized with the Yoast SEO"]},
+    {"name": "Rank Math SEO", "category": "SEO Plugin", "weight": "Light", "html": [r"rank-math-schema", r"Rank Math SEO"]},
+    {"name": "Cloudflare", "category": "CDN & Security", "weight": "Light", "headers": ["cf-ray", "cf-cache-status"]},
+    {"name": "Vercel", "category": "Cloud Hosting / Edge", "weight": "Light", "headers": ["x-vercel-id", "x-vercel-cache"]},
+    {"name": "CloudFront (AWS)", "category": "CDN", "weight": "Light", "headers": ["x-amz-cf-id", "x-amz-cf-pop"]}
+]
+
+def detect_tech_stack_and_weaknesses(raw_html, resp_headers, soup):
+    """Wappalyzer-style passive technology detector + automated SEO, Speed, Tracking & Hygiene weakness analyzer."""
+    headers_lower = {str(k).lower(): str(v) for k, v in (resp_headers or {}).items()}
+    meta_gen_tag = soup.find("meta", attrs={"name": re.compile(r"^generator$", re.I)})
+    meta_gen_val = meta_gen_tag.get("content", "").strip() if meta_gen_tag else ""
+
+    detected_tools = []
+    seen_names = set()
+    for fp in TECH_FINGERPRINTS:
+        matched = False
+        version_or_id = ""
+        for h_key in fp.get("headers", []):
+            if h_key in headers_lower:
+                matched = True
+                break
+        if not matched and fp.get("meta_gen") and meta_gen_val:
+            m_gen = re.search(fp["meta_gen"], meta_gen_val, re.I)
+            if m_gen:
+                matched = True
+                if m_gen.groups() and m_gen.group(1):
+                    version_or_id = m_gen.group(1)
+        if not matched and fp.get("html"):
+            for pat in fp["html"]:
+                m_html = re.search(pat, raw_html, re.I)
+                if m_html:
+                    matched = True
+                    if m_html.groups() and m_html.group(1):
+                        version_or_id = m_html.group(1)
+                    break
+        if matched and fp["name"] not in seen_names:
+            seen_names.add(fp["name"])
+            detected_tools.append({
+                "Tool": fp["name"],
+                "Category": fp["category"],
+                "Performance_Weight": fp["weight"],
+                "Version_or_ID": version_or_id or "Detected"
+            })
+
+    blocking_head_scripts = 0
+    if soup.head:
+        for sc in soup.head.find_all("script", src=True):
+            if not sc.has_attr("async") and not sc.has_attr("defer") and sc.get("type") != "module":
+                blocking_head_scripts += 1
+
+    ga4_ids = set(re.findall(r"G-[A-Z0-9]{6,}", raw_html))
+    jq_versions = re.findall(r"jquery[-/]([12]\.\d+(?:\.\d+)?|3\.[0-4]\.\d+)", raw_html, re.I)
+
+    weaknesses = []
+    tool_names = {t["Tool"] for t in detected_tools}
+    heavy_tools = [t["Tool"] for t in detected_tools if t["Performance_Weight"] == "Heavy"]
+    heatmap_tools = [t["Tool"] for t in detected_tools if t["Category"] == "Heatmaps & Session Replay"]
+    ad_pixels = [t["Tool"] for t in detected_tools if t["Category"] == "Advertising Pixel"]
+
+    if blocking_head_scripts >= 4:
+        weaknesses.append({"Area": "⚡ Speed & Core Web Vitals", "Severity": "High", "Finding": f"{blocking_head_scripts} render-blocking scripts in <head> without async/defer.", "Recommendation": "Add 'defer' or load third-party scripts via GTM after page interaction to cut mobile LCP/TBT."})
+    if len(heavy_tools) >= 2:
+        weaknesses.append({"Area": "⚡ Third-Party App Bloat", "Severity": "High", "Finding": f"Multiple heavy scripts active simultaneously ({', '.join(heavy_tools)}).", "Recommendation": "Audit app ROI and delay chat/popup widgets by 3–5 seconds so they do not compete with mobile rendering."})
+    if len(heatmap_tools) >= 2:
+        weaknesses.append({"Area": "📊 Redundant Analytics Tools", "Severity": "Medium", "Finding": f"Overlapping session-recording tools detected ({', '.join(heatmap_tools)}).", "Recommendation": "Consolidate to a single heatmap platform to reduce CPU overhead."})
+    if "Google Tag Manager" not in tool_names and "Google Analytics 4 (GA4)" not in tool_names:
+        weaknesses.append({"Area": "📈 Analytics & Attribution Blind Spot", "Severity": "Critical", "Finding": "Neither Google Tag Manager (GTM) nor GA4 was detected in the page source.", "Recommendation": "Deploy GTM and GA4 immediately to track organic/paid conversions."})
+    if len(ga4_ids) > 1:
+        weaknesses.append({"Area": "📈 Duplicate Analytics Tracking", "Severity": "High", "Finding": f"Multiple GA4 Measurement IDs firing on the same page ({', '.join(sorted(ga4_ids))}).", "Recommendation": "Remove duplicate gtag snippets so sessions and conversions are not double-counted."})
+    if not ad_pixels:
+        weaknesses.append({"Area": "🎯 Paid Retargeting Gap", "Severity": "Medium", "Finding": "No Meta, LinkedIn, or Google Ads remarketing pixels detected.", "Recommendation": "Install conversion and remarketing pixels via GTM to build retargeting audiences."})
+    if "Shopify" in tool_names:
+        weaknesses.append({"Area": "🔍 Shopify SEO Architecture", "Severity": "Medium", "Finding": "Shopify detected — default themes often generate duplicate /collections/*/products/* URLs.", "Recommendation": "Verify canonical tags point to root /products/ URLs and enrich JSON-LD with FAQPage and AggregateRating schema."})
+    if "React" in tool_names and "Next.js" not in tool_names:
+        weaknesses.append({"Area": "🤖 AI & Search Crawlability", "Severity": "High", "Finding": "Client-side React detected without Next.js SSR indicators.", "Recommendation": "Ensure server-side rendering (SSR) or static pre-rendering is active so AI crawlers see full text."})
+    if meta_gen_val and re.search(r"\d+\.\d+", meta_gen_val):
+        weaknesses.append({"Area": "🛡️ Defensive Hygiene", "Severity": "Low", "Finding": f"CMS version exposed in meta generator tag ('{meta_gen_val}').", "Recommendation": "Hide public CMS generator version strings in template settings."})
+    if jq_versions:
+        weaknesses.append({"Area": "🛡️ Frontend Library Maintenance", "Severity": "Medium", "Finding": f"Legacy jQuery version detected (v{jq_versions[0]}).", "Recommendation": "Upgrade to jQuery 3.7+ (or native vanilla JS) to eliminate deprecated DOM APIs."})
+
+    return detected_tools, weaknesses
+
+def analyze_brand_serp_top_pages(brand_query, target_domain, serpapi_key):
+    """
+    Queries live Google Search for the brand name to see:
+    1) Which pages of the brand Google ranks at the top (#1 organic + Google Sitelinks = most valuable pages)
+    2) Whether competitors or third-party review sites steal top branded positions
+    3) Whether a Google Knowledge Graph Panel appears on the right-hand side
+    """
+    if not serpapi_key or not brand_query:
+        return pd.DataFrame(), [], {}
+    target_host = urlparse(target_domain).netloc.replace("www.", "").lower() if "http" in target_domain else target_domain.replace("www.", "").lower()
+    params = {"engine": "google", "q": brand_query, "location": "United States", "hl": "en", "gl": "us", "num": 15, "api_key": serpapi_key}
+    res, _ = fetch_serpapi_with_retry(params, max_retries=2, timeout=28)
+    if not res:
+        return pd.DataFrame(), [], {}
+
+    kg_raw = res.get("knowledge_graph", {})
+    kg_summary = {
+        "Has_Panel": bool(kg_raw),
+        "Title": kg_raw.get("title", "None"),
+        "Type": kg_raw.get("type", "None"),
+        "Website": kg_raw.get("website", "None"),
+        "Description": kg_raw.get("description", "No Knowledge Graph panel displayed on branded SERP.")
+    }
+
+    sitelinks_extracted = []
+    rows = []
+    for pos, item in enumerate(res.get("organic_results", [])[:12], 1):
+        link = item.get("link", "")
+        clean_l = clean_display_url(link)
+        dom = urlparse(link).netloc.replace("www.", "").lower()
+        is_own = (target_host in dom) if target_host else False
+
+        # Extract Google Sitelinks (these are the exact pages Google deems most valuable to users!)
+        sl_titles = []
+        sitelinks_obj = item.get("sitelinks", {})
+        if isinstance(sitelinks_obj, dict):
+            for grp in sitelinks_obj.values():
+                if isinstance(grp, list):
+                    for sl in grp:
+                        if isinstance(sl, dict) and sl.get("title"):
+                            sl_titles.append(sl["title"])
+                            if is_own:
+                                sitelinks_extracted.append({
+                                    "Sitelink_Title": sl.get("title", ""),
+                                    "Sitelink_URL": clean_display_url(sl.get("link", "")),
+                                    "Sitelink_Snippet": sl.get("snippet", "Primary Google Sitelink")
+                                })
+
+        if is_own and pos == 1:
+            val_tier = "👑 #1 Brand Anchor + Sitelinks Hub" if sl_titles else "👑 #1 Primary Brand Result"
+        elif is_own:
+            val_tier = "🟢 Secondary Brand Page (High Authority)"
+        else:
+            val_tier = "⚠️ Third-Party / Competitor on Brand SERP"
+
+        rows.append({
+            "SERP_Pos": f"#{pos}",
+            "Ownership": "🟢 Your Website" if is_own else "🌐 External / Competitor",
+            "Valuable_Page_Tier": val_tier,
+            "Page_Title_Shown_in_Google": item.get("title", "N/A"),
+            "Displayed_URL": clean_l,
+            "Google_Sitelinks_Awarded": " | ".join(sl_titles[:6]) if sl_titles else "None"
+        })
+
+    return pd.DataFrame(rows), sitelinks_extracted, kg_summary
 
 def query_crawly_seo(domain, api_key):
     """Fetches Domain Authority, Referring Domains, and Backlinks via Crawly Free API (No credit card)."""
@@ -794,7 +999,7 @@ with st.sidebar:
             "df_equity", "suggested_organic_kws", "suggested_aeo_prompts",
             "df_organic_suggestions", "df_aeo_suggestions", "detected_industry",
             "sec_headers", "cwv_metrics", "crux_metrics", "safe_browsing",
-            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64"
+            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64", "df_brand_serp", "brand_sitelinks", "brand_kg_panel", "cwv_tested_url"
         ]
         for k in keys_to_clear:
             st.session_state.pop(k, None)
@@ -826,7 +1031,17 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Crawl Settings")
-    crawl_limit = st.slider("Max Commercial Pages to Crawl", min_value=5, max_value=80, value=25, step=5)
+    whole_website_mode = st.checkbox(
+        "🌐 Whole Website (All Sitemap Pages)",
+        value=False,
+        help="Automatically unpacks all XML sitemaps and audits every discovered page across the entire domain (up to 2,500 pages)."
+    )
+    if whole_website_mode:
+        crawl_limit = 2500
+        st.info("🌐 **Whole Website Mode Active:** All discovered XML sitemaps and internal pages will be audited.")
+    else:
+        crawl_limit = st.slider("Max Landing Pages to Crawl", min_value=5, max_value=500, value=50, step=5)
+    st.session_state["whole_website_mode"] = whole_website_mode
     st.caption("Multi-threaded engine analyzes DOM, schemas, metadata & security.")
 
 # Initialize Session States
@@ -836,6 +1051,10 @@ if "df_aeo" not in st.session_state: st.session_state["df_aeo"] = pd.DataFrame()
 if "df_ads" not in st.session_state: st.session_state["df_ads"] = pd.DataFrame()
 if "df_serp_ads" not in st.session_state: st.session_state["df_serp_ads"] = pd.DataFrame()
 if "ads_ai_strategy" not in st.session_state: st.session_state["ads_ai_strategy"] = ""
+if "df_brand_serp" not in st.session_state: st.session_state["df_brand_serp"] = pd.DataFrame()
+if "brand_sitelinks" not in st.session_state: st.session_state["brand_sitelinks"] = []
+if "brand_kg_panel" not in st.session_state: st.session_state["brand_kg_panel"] = {}
+if "cwv_tested_url" not in st.session_state: st.session_state["cwv_tested_url"] = ""
 if "df_cannibal" not in st.session_state: st.session_state["df_cannibal"] = pd.DataFrame()
 if "df_equity" not in st.session_state: st.session_state["df_equity"] = pd.DataFrame()
 if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_organic_kws"] = ""
@@ -1063,7 +1282,7 @@ with tab_arch:
                 url_pool = custom_urls if custom_urls else [target_site]
                 st.session_state["discovered_sitemaps"] = [{"Sitemap_URL": "Direct URL Input Mode", "Type": "Manual List", "Child_Sitemaps_Found": 0, "HTML_Pages_Extracted": len(url_pool)}]
             else:
-                url_pool, sm_log = discover_target_urls(root, target_site, slug_filter, crawl_limit, HEADERS)
+                url_pool, sm_log = discover_target_urls(root, target_site, slug_filter, crawl_limit, HEADERS, whole_website=whole_website_mode)
                 st.session_state["discovered_sitemaps"] = sm_log
 
             # F. Complete On-Page SEO, Metadata, Content Depth, Readability, Schema & WCAG Auditor
@@ -1087,6 +1306,12 @@ with tab_arch:
                     "H2_Texts": "None",
                     "H3_Count": 0,
                     "H3_Texts": "None",
+                    "H4_H6_Count": 0,
+                    "Heading_Audit_Status": "Missing H1",
+                    "Missing_Alt_Files": "None",
+                    "Detected_Tech_Stack": "None",
+                    "Tech_Tools_JSON": "[]",
+                    "Tech_Weaknesses_JSON": "[]",
                     "Word_Count": 0,
                     "Content_Depth": "Thin (<300 words)",
                     "Readability_Score": 0.0,
@@ -1129,12 +1354,27 @@ with tab_arch:
                         
                         h2s = [h.get_text(separator=" ", strip=True) for h in soup.find_all("h2") if h.get_text(strip=True)]
                         h3s = [h.get_text(separator=" ", strip=True) for h in soup.find_all("h3") if h.get_text(strip=True)]
+                        h4_6 = [h.get_text(separator=" ", strip=True) for h in soup.find_all(["h4", "h5", "h6"]) if h.get_text(strip=True)]
                         res["H2_Count"] = len(h2s)
                         res["H2_Texts"] = " | ".join(h2s[:6]) if h2s else "None"
                         res["H3_Count"] = len(h3s)
                         res["H3_Texts"] = " | ".join(h3s[:6]) if h3s else "None"
+                        res["H4_H6_Count"] = len(h4_6)
                         if len(h1s) > 0 and len(h3s) > 0 and len(h2s) == 0:
                             res["Skipped_Headings"] = True
+
+                        if len(h1s) == 0:
+                            res["Heading_Audit_Status"] = "🔴 Missing H1"
+                        elif len(h1s) > 1:
+                            res["Heading_Audit_Status"] = f"⚠️ Multiple H1s ({len(h1s)})"
+                        elif res["Concatenated_H1"]:
+                            res["Heading_Audit_Status"] = "⚠️ Merged Words in H1"
+                        elif res["Skipped_Headings"]:
+                            res["Heading_Audit_Status"] = "⚠️ Skipped H2 Level"
+                        elif len(h2s) == 0:
+                            res["Heading_Audit_Status"] = "🟡 No H2 Subheadings"
+                        else:
+                            res["Heading_Audit_Status"] = "🟢 Valid (H1→H2→H3)"
 
                         # 2. Meta Title & Meta Description
                         t_tag = soup.find("title")
@@ -1168,9 +1408,16 @@ with tab_arch:
                         imgs = soup.find_all("img")
                         res["Images_Count"] = len(imgs)
                         if imgs:
-                            missing_alt = sum([1 for img in imgs if not img.get("alt") or len(img.get("alt").strip()) == 0])
+                            missing_alt_imgs = [img for img in imgs if not img.get("alt") or len(img.get("alt").strip()) == 0]
+                            missing_alt = len(missing_alt_imgs)
                             res["Missing_Alt_Count"] = missing_alt
                             res["Missing_Alt_Pct"] = round((missing_alt / len(imgs)) * 100, 1)
+                            bad_srcs = []
+                            for m_img in missing_alt_imgs[:5]:
+                                s_attr = m_img.get("src") or m_img.get("data-src") or ""
+                                if s_attr:
+                                    bad_srcs.append(s_attr.split("?")[0].split("/")[-1][:35])
+                            res["Missing_Alt_Files"] = ", ".join(bad_srcs) if bad_srcs else "Decorative / Inline SVG"
                         
                         # 5. OpenGraph Social Tags
                         res["Has_OG_Tags"] = bool(soup.find("meta", property="og:title") and soup.find("meta", property="og:image"))
@@ -1221,13 +1468,19 @@ with tab_arch:
                         if res["H1_Count"] != 1: a11y -= 5
                         res["A11y_Score"] = max(10, min(100, a11y))
 
-                        # 7. Structured Data Schemas (JSON-LD & Microdata Recursive Audit)
+                        # 7. Structured Data Schemas (JSON-LD, Microdata & RDFa Recursive Audit)
                         s_cnt, u_types, has_rich, has_aeo, s_tier, s_plain = extract_all_schemas_from_soup(soup)
                         res["Total_Schemas"] = s_cnt
                         res["Commercial_Schema"] = bool(has_rich or has_aeo)
                         res["Schema_Types"] = ", ".join(u_types) if u_types else "None"
                         res["Schema_Tier"] = s_tier
                         res["Schema_Plain_English"] = s_plain
+
+                        # 7.5 Wappalyzer-Style Tech Stack & App Weakness Detection
+                        t_tools, t_weaknesses = detect_tech_stack_and_weaknesses(r.text, r.headers, soup)
+                        res["Detected_Tech_Stack"] = ", ".join([t["Tool"] for t in t_tools]) if t_tools else "None Detected"
+                        res["Tech_Tools_JSON"] = json.dumps(t_tools)
+                        res["Tech_Weaknesses_JSON"] = json.dumps(t_weaknesses)
                         
                         # 8. Content Depth, Readability & AEO Answer Readiness
                         for tag_rem in soup(["script", "style", "noscript", "nav", "footer", "header"]):
@@ -1262,8 +1515,23 @@ with tab_arch:
                     res["A11y_Score"] = 40
                 return res
 
-            with ThreadPoolExecutor(max_workers=8) as ex:
-                records = list(ex.map(audit_page, url_pool))
+            total_to_crawl = len(url_pool)
+            crawl_prog = st.progress(0, text=f"Crawling and auditing 0 of {total_to_crawl} pages...")
+            records_map = {}
+            with ThreadPoolExecutor(max_workers=12) as ex:
+                future_to_idx = {ex.submit(audit_page, u): i for i, u in enumerate(url_pool)}
+                completed_cnt = 0
+                for fut in as_completed(future_to_idx):
+                    idx_u = future_to_idx[fut]
+                    records_map[idx_u] = fut.result()
+                    completed_cnt += 1
+                    if completed_cnt % max(1, total_to_crawl // 25) == 0 or completed_cnt == total_to_crawl:
+                        crawl_prog.progress(
+                            completed_cnt / max(1, total_to_crawl),
+                            text=f"Crawling and auditing {completed_cnt} of {total_to_crawl} pages..."
+                        )
+            crawl_prog.empty()
+            records = [records_map[i] for i in range(total_to_crawl)]
 
             df_crawl = pd.DataFrame(records)
             st.session_state["df_crawl"] = df_crawl
@@ -1401,31 +1669,47 @@ Respond strictly in valid JSON format:
         ck3.metric("Avg. AEO Readiness Score", f"{avg_aeo_ready}/100", help="Measures direct answer structure, H2/H3 depth, lists/tables, FAQ presence & schemas.")
         ck4.metric("Sitemaps Unpacked", f"{len(st.session_state.get('discovered_sitemaps', []))} XML files")
 
-        xray_tab1, xray_tab2, xray_tab3, xray_tab4 = st.tabs([
-            "🏷️ 1. Full Metadata & Indexation Matrix",
-            "📑 2. Content Depth, Headings (H1–H3) & AEO",
+        xray_tab1, xray_tab2, xray_tab3, xray_tab4, xray_tab5 = st.tabs([
+            "🏷️ 1. Meta Title & Meta Description Matrix",
+            "📑 2. H1–H6 Headings & Image Alt Text Audit",
             "🔎 3. Single-Page Deep X-Ray & AI Copywriter",
-            "🗺️ 4. Unpacked XML Sitemaps Log"
+            "🛠️ 4. Installed Apps & Tech Stack (Wappalyzer)",
+            "🗺️ 5. Unpacked XML Sitemaps Log"
         ])
 
         with xray_tab1:
-            st.markdown("##### Complete On-Page Metadata, Canonical & Indexation Matrix")
+            st.markdown("##### Complete On-Page Meta Title, Meta Description, Canonical & Indexation Matrix")
+            m_title_ok_cnt = int((display_df["Meta_Title_Status"] == "Optimal (30-60)").sum())
+            m_desc_ok_cnt = int((display_df["Meta_Desc_Status"] == "Good (120-165)").sum())
+            mt1, mt2, mt3 = st.columns(3)
+            mt1.metric("Optimal Meta Titles (30–60 chars)", f"{m_title_ok_cnt}/{len(display_df)}")
+            mt2.metric("Optimal Meta Descriptions (120–165 chars)", f"{m_desc_ok_cnt}/{len(display_df)}")
+            mt3.metric("OpenGraph Social Tags Active", f"{int(display_df['Has_OG_Tags'].sum())}/{len(display_df)}")
             meta_cols = [
                 "URL", "Meta_Title", "Meta_Title_Length", "Meta_Title_Status",
                 "Meta_Desc", "Meta_Desc_Length", "Meta_Desc_Status",
                 "Canonical_URL", "Canonical_Status", "Robots_Meta", "Has_OG_Tags"
             ]
-            st.dataframe(display_df[meta_cols], use_container_width=True)
+            st.dataframe(display_df[meta_cols], hide_index=True, use_container_width=True)
 
         with xray_tab2:
-            st.markdown("##### Heading Hierarchy (H1, H2, H3), Content Depth, Readability & AEO Structure")
-            content_cols = [
-                "URL", "H1_Text", "H1_Count", "H2_Count", "H2_Texts",
-                "H3_Count", "H3_Texts", "Word_Count", "Content_Depth",
-                "Readability_Score", "FAQ_Present", "Lists_Tables_Count",
-                "AEO_Readiness_Score", "Internal_Links_Count", "External_Links_Count", "Content_Preview"
+            st.markdown("##### Complete Heading Hierarchy (H1–H6) & Image Alt Text Audit")
+            h1_clean_cnt = int((display_df["H1_Count"] == 1).sum())
+            total_imgs_all = int(display_df["Images_Count"].sum()) if "Images_Count" in display_df.columns else 0
+            missing_alt_all = int(display_df["Missing_Alt_Count"].sum()) if "Missing_Alt_Count" in display_df.columns else 0
+            ht1, ht2, ht3, ht4 = st.columns(4)
+            ht1.metric("Pages with Single Clean H1", f"{h1_clean_cnt}/{len(display_df)}")
+            ht2.metric("Total Images Audited", f"{total_imgs_all:,}")
+            ht3.metric("Images Missing Alt Text", f"{missing_alt_all:,}", delta="Needs Alt Tags" if missing_alt_all > 0 else "100% Tagged", delta_color="inverse" if missing_alt_all > 0 else "normal")
+            ht4.metric("Avg. Readability (Flesch)", f"{display_df['Readability_Score'].mean():.1f}/100")
+
+            h_alt_cols = [
+                "URL", "Heading_Audit_Status", "H1_Text", "H1_Count", "H2_Count", "H2_Texts",
+                "H3_Count", "H3_Texts", "Images_Count", "Missing_Alt_Count", "Missing_Alt_Pct",
+                "Missing_Alt_Files", "Word_Count", "AEO_Readiness_Score"
             ]
-            st.dataframe(display_df[content_cols], use_container_width=True)
+            avail_h_cols = [c for c in h_alt_cols if c in display_df.columns]
+            st.dataframe(display_df[avail_h_cols], hide_index=True, use_container_width=True)
 
         with xray_tab3:
             st.markdown("##### Deep Single-Page SEO & Content X-Ray")
@@ -1485,6 +1769,40 @@ Provide an actionable, publication-ready optimization plan with:
                                 st.error("Could not generate AI copy audit. Verify your Gemini API key.")
 
         with xray_tab4:
+            st.markdown("##### 🛠️ Installed Apps, Marketing Pixels & Tech Stack (Wappalyzer-Style Detector)")
+            st.caption("Automatically fingerprints CMS platforms, JS frameworks, tag managers, analytics, heatmaps, chat widgets, ad pixels, and CDNs across crawled pages, and flags stack weak points.")
+            all_tools_map = {}
+            all_weaknesses_map = {}
+            if "Tech_Tools_JSON" in display_df.columns:
+                for _, r_t in display_df.iterrows():
+                    try:
+                        for item_t in json.loads(r_t.get("Tech_Tools_JSON", "[]")):
+                            t_name = item_t["Tool"]
+                            if t_name not in all_tools_map:
+                                all_tools_map[t_name] = {**item_t, "Pages_Detected": 1}
+                            else:
+                                all_tools_map[t_name]["Pages_Detected"] += 1
+                    except Exception:
+                        pass
+                    try:
+                        for item_w in json.loads(r_t.get("Tech_Weaknesses_JSON", "[]")):
+                            w_key = item_w["Finding"]
+                            if w_key not in all_weaknesses_map:
+                                all_weaknesses_map[w_key] = item_w
+                    except Exception:
+                        pass
+
+            if all_tools_map:
+                df_tools_agg = pd.DataFrame(list(all_tools_map.values())).sort_values(by=["Pages_Detected", "Category"], ascending=[False, True])
+                st.dataframe(df_tools_agg, hide_index=True, use_container_width=True)
+            else:
+                st.info("No third-party marketing apps or CMS fingerprints detected on this sample.")
+
+            if all_weaknesses_map:
+                st.markdown("##### 🚨 Tech Stack Weaknesses & Optimization Opportunities")
+                st.dataframe(pd.DataFrame(list(all_weaknesses_map.values())), hide_index=True, use_container_width=True)
+
+        with xray_tab5:
             st.markdown("##### Unpacked XML Sitemap Index & Category Discovery Log")
             if st.session_state.get("discovered_sitemaps"):
                 st.dataframe(pd.DataFrame(st.session_state["discovered_sitemaps"]), use_container_width=True)
@@ -1602,7 +1920,7 @@ Provide an actionable, publication-ready optimization plan with:
                 "",
                 "## Core Commercial Solutions"
             ]
-            for _, r in df.head(20).iterrows():
+            for _, r in df.head(150).iterrows():
                 h1_name = r['H1_Text'] if r['H1_Text'] != 'N/A' else r['URL'].strip('/').split('/')[-1].replace('-', ' ').title()
                 llms_lines.append(f"- [{h1_name}]({r['URL']})")
             
@@ -1906,8 +2224,58 @@ with tab_cannibal:
 # TAB 4: ORGANIC KEYWORD SERP TRACKER
 # =============================================================================
 with tab_serp:
-    st.subheader("Live Google Organic Search Rank Benchmark")
-    st.write("Track search engine positioning across high-intent commercial terms using SerpApi.")
+    st.subheader("👑 Branded Search & Top Most Valuable Pages Analyzer")
+    st.markdown("""
+    <div class="guide-box">
+        <strong>🎯 Why Check Branded Search Results?</strong> When people search your exact brand name on Google, the #1 result and its <strong>Google Sitelinks</strong> reveal the exact pages Google considers your website's most valuable, authoritative entry points—and exposes whether third-party review sites or competitors are hijacking your branded traffic.
+    </div>
+    """, unsafe_allow_html=True)
+
+    default_brand_q = (urlparse(st.session_state.get("target_domain", "https://alphacord.com")).netloc.replace("www.", "").split(".")[0] or "alphacord").title()
+    col_br1, col_br2 = st.columns([3, 1])
+    with col_br1:
+        brand_search_input = st.text_input("Brand Name Query to Audit on Google (US Index):", value=default_brand_q)
+    with col_br2:
+        st.write("")
+        st.write("")
+        run_brand_serp_btn = st.button("👑 Audit Brand SERP & Top Pages", use_container_width=True)
+
+    if run_brand_serp_btn:
+        if not serpapi_key:
+            st.error("Please provide a SerpApi key in the sidebar.")
+        else:
+            with st.spinner(f"Analyzing live Google branded SERP & top valuable pages for '{brand_search_input}'..."):
+                t_dom_br = st.session_state.get("target_domain", "https://alphacord.com")
+                df_br, sl_list, kg_br = analyze_brand_serp_top_pages(brand_search_input, t_dom_br, serpapi_key)
+                st.session_state["df_brand_serp"] = df_br
+                st.session_state["brand_sitelinks"] = sl_list
+                st.session_state["brand_kg_panel"] = kg_br
+                if not df_br.empty:
+                    st.success(f"✓ Brand SERP Audit Complete! Captured {len(df_br)} Page-1 results and {len(sl_list)} Google Sitelinks.")
+
+    if not st.session_state.get("df_brand_serp", pd.DataFrame()).empty:
+        df_br_res = st.session_state["df_brand_serp"]
+        sl_res = st.session_state.get("brand_sitelinks", [])
+        kg_br_res = st.session_state.get("brand_kg_panel", {})
+
+        own_br_cnt = int(df_br_res["Ownership"].str.contains("Your Website", na=False).sum())
+        ext_br_cnt = len(df_br_res) - own_br_cnt
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Branded Page-1 Ownership", f"{own_br_cnt}/{len(df_br_res)} Slots", delta=f"{ext_br_cnt} External/Rival Links" if ext_br_cnt > 0 else "100% Owned")
+        b2.metric("Most Valuable Sitelink Pages", f"{len(sl_res)} Pages", help="Pages Google awards sitelink shortcuts for under your #1 result.")
+        b3.metric("Knowledge Graph Brand Panel", "✓ Active" if kg_br_res.get("Has_Panel") else "🔴 Missing")
+        b4.metric("#1 Branded Anchor", df_br_res["Displayed_URL"].iloc[0] if not df_br_res.empty else "N/A")
+
+        if sl_res:
+            st.markdown("##### 🌟 Google's Top Most Valuable Pages (Awarded Branded Sitelinks)")
+            st.dataframe(pd.DataFrame(sl_res), hide_index=True, use_container_width=True)
+
+        st.markdown("##### 📋 Full Branded SERP Breakdown (Who Owns Your Brand Name on Page 1)")
+        st.dataframe(df_br_res, hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("📈 Non-Branded Commercial Organic Search Rank Benchmark")
+    st.write("Track search engine positioning across high-intent non-branded commercial terms using SerpApi.")
     
     col_kws, col_action = st.columns([3, 1])
     with col_kws:
@@ -2372,7 +2740,13 @@ Provide a clear, executive-ready Paid Media Strategy & Counter-Attack Plan:
 # =============================================================================
 with tab_cwv:
     st.subheader("Mobile Core Web Vitals Lab Diagnostics & CrUX 28-Day Field Data")
-    st.write("Runs Google PageSpeed Insights (Simulated Lab) and Chrome UX Report (Real User 28-Day Field Vitals).")
+    st.markdown("""
+    <div class="guide-box">
+        <strong>ℹ️ Important Scope Notice (Single-Page vs. Domain-Wide Speed):</strong><br>
+        • <strong>Lighthouse Lab Speed Score, LCP, TBT &amp; CLS</strong> are measured <strong>strictly for the single specific URL entered below</strong> (not the entire website). Different page templates (e.g., Homepage vs. Product Pages vs. Blog Articles) can have completely different mobile load speeds.<br>
+        • <strong>CrUX 28-Day Field Data</strong> reflects real Chrome visitor cohorts across the origin domain when traffic thresholds are met.
+    </div>
+    """, unsafe_allow_html=True)
 
     col_cwv1, col_cwv2 = st.columns([3, 1])
     with col_cwv1:
@@ -2402,7 +2776,9 @@ with tab_cwv:
                         "FCP": audits.get("first-contentful-paint", {}).get("displayValue", "N/A"),
                         "Speed_Index": audits.get("speed-index", {}).get("displayValue", "N/A")
                     }
+                    cwv["Tested_URL"] = cwv_url
                     st.session_state["cwv_metrics"] = cwv
+                    st.session_state["cwv_tested_url"] = cwv_url
                 except Exception as e:
                     st.error(f"PageSpeed Lab API Error: {e}")
 
@@ -2432,10 +2808,14 @@ with tab_cwv:
         score_val = cwv.get("Score", 0)
         score_color = "#16a34a" if score_val >= 90 else ("#f2a900" if score_val >= 50 else "#dc2626")
         
+        tested_u_disp = cwv.get("Tested_URL") or st.session_state.get("cwv_tested_url") or cwv_url
         st.markdown(f"""
-        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:16px; margin-bottom:15px;">
-            <div style="font-size:18px; font-weight:bold; color:#004b93; margin-bottom:8px;">
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #004b93; border-radius:6px; padding:16px; margin-bottom:15px;">
+            <div style="font-size:18px; font-weight:bold; color:#004b93; margin-bottom:4px;">
                 Lab Mobile Performance Score: <span style="color:{score_color}; font-size:24px;">{score_val}/100</span>
+            </div>
+            <div style="font-size:12.5px; color:#475569;">
+                📍 <strong>Audited Page Scope:</strong> <code>{tested_u_disp}</code> <em>(Single-page Lighthouse lab benchmark — test individual product or landing page URLs above to compare template speeds)</em>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -3706,7 +4086,7 @@ def build_executive_dossier_html(
     cwv_block = ""
     if has_cwv:
         cwv_block = f'''
-        <div class="sub-header">Mobile Speed &amp; Core Web Vitals</div>
+        <div class="sub-header">Mobile Speed &amp; Core Web Vitals (Single-Page Audit: {esc(cwv_res.get("Tested_URL", target_name))})</div><p class="intro-note">Note: Lab Core Web Vitals (Performance Score, LCP, TBT, and CLS) measure the specific page URL listed above rather than every page across the site.</p>
         <table>
             <thead>
                 <tr>
