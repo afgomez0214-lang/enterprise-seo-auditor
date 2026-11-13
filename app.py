@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import json
 import os
+import io
 import math
 from datetime import datetime
 from collections import Counter
@@ -1021,6 +1022,8 @@ def build_master_audit_excel(
 
         for r_idx, row_vals in enumerate(clean_df.itertuples(index=False), start_row + 1):
             for c_idx, val in enumerate(row_vals, 1):
+                if isinstance(val, str):
+                    val = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', val)
                 cell = ws.cell(row=r_idx, column=c_idx, value=val)
                 cell.font = reg_font
                 cell.border = thin_border
