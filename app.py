@@ -624,6 +624,326 @@ def analyze_brand_serp_top_pages(brand_query, target_domain, serpapi_key):
 
     return pd.DataFrame(rows), sitelinks_extracted, kg_summary
 
+def audit_robots_and_ai_bots(root_url, target_urls, headers):
+    """Parses robots.txt to audit AI crawler governance (GPTBot, ClaudeBot, PerplexityBot, Google-Extended) and Disallow conflicts."""
+    robots_url = f"{root_url.rstrip('/')}/robots.txt"
+    result = {
+        "exists": False,
+        "status_code": 0,
+        "sitemaps_declared": [],
+        "ai_bots": [],
+        "blocked_target_urls": [],
+        "raw_preview": ""
+    }
+    ai_agents = [
+        ("GPTBot", "OpenAI Search & Training Crawler"),
+        ("OAI-SearchBot", "ChatGPT Live Web Search Bot"),
+        ("ChatGPT-User", "ChatGPT User-Triggered Browsing"),
+        ("ClaudeBot", "Anthropic Claude Crawler"),
+        ("PerplexityBot", "Perplexity AI Answer Engine"),
+        ("Google-Extended", "Google Gemini / AI Grounding Control"),
+        ("Googlebot", "Google Search Primary Indexer"),
+        ("Bingbot", "Microsoft Bing & Copilot Indexer")
+    ]
+    try:
+        r = requests.get(robots_url, headers=headers, timeout=8)
+        result["status_code"] = r.status_code
+        if r.status_code == 200 and "<html" not in r.text.lower():
+            result["exists"] = True
+            txt = r.text
+            result["raw_preview"] = txt[:2500]
+            rules_by_agent = {}
+            current_agents = []
+            for raw_line in txt.splitlines():
+                line = raw_line.split("#", 1)[0].strip()
+                if not line or ":" not in line:
+                    continue
+                k, v = [x.strip() for x in line.split(":", 1)]
+                kl = k.lower()
+                if kl == "sitemap" and v:
+                    result["sitemaps_declared"].append(v)
+                elif kl == "user-agent":
+                    agent_key = v.lower()
+                    if current_agents and rules_by_agent.get(current_agents[-1]) is not None and len(rules_by_agent[current_agents[-1]]) > 0:
+                        current_agents = [agent_key]
+                    else:
+                        current_agents.append(agent_key)
+                    rules_by_agent.setdefault(agent_key, [])
+                elif kl in ("disallow", "allow") and current_agents:
+                    for ag in current_agents:
+                        rules_by_agent.setdefault(ag, []).append((kl, v))
+
+            wildcard_rules = rules_by_agent.get("*", [])
+            for bot_name, bot_desc in ai_agents:
+                specific = rules_by_agent.get(bot_name.lower())
+                active_rules = specific if specific is not None else wildcard_rules
+                disallows = [val for directive, val in active_rules if directive == "disallow" and val]
+                allows = [val for directive, val in active_rules if directive == "allow" and val]
+                if "/" in disallows and "/" not in allows:
+                    status_lbl = "🔴 Blocked (Disallow: /)"
+                elif disallows:
+                    status_lbl = f"🟡 Restricted ({len(disallows)} path rule(s))"
+                else:
+                    status_lbl = "🟢 Allowed (Full Access)"
+                result["ai_bots"].append({
+                    "Crawler_Bot": bot_name,
+                    "Platform_Role": bot_desc,
+                    "Governance_Status": status_lbl,
+                    "Rule_Source": f"Explicit ({bot_name})" if specific is not None else "Inherited (*)"
+                })
+
+            check_rules = (rules_by_agent.get("googlebot") or []) + wildcard_rules
+            disallow_prefixes = [val for directive, val in check_rules if directive == "disallow" and val and "*" not in val]
+            for tu in target_urls:
+                path_u = urlparse(tu).path or "/"
+                for pref in disallow_prefixes:
+                    if path_u.startswith(pref):
+                        result["blocked_target_urls"].append({"Blocked_URL": tu, "Matched_Rule": f"Disallow: {pref}"})
+                        break
+        else:
+            for bot_name, bot_desc in ai_agents:
+                result["ai_bots"].append({
+                    "Crawler_Bot": bot_name,
+                    "Platform_Role": bot_desc,
+                    "Governance_Status": "🟢 Allowed (No robots.txt)",
+                    "Rule_Source": "Default Open"
+                })
+    except Exception:
+        pass
+    return result
+
+def verify_internal_links_health(df_crawl, headers, max_links=60):
+    """Checks internal links extracted across crawled pages for 404/5xx broken targets and 301/302 redirect chains."""
+    if df_crawl.empty or "Internal_Link_Targets_JSON" not in df_crawl.columns:
+        return pd.DataFrame()
+    link_sources = {}
+    for _, r in df_crawl.iterrows():
+        src = r.get("URL", "")
+        try:
+            items = json.loads(r.get("Internal_Link_Targets_JSON", "[]"))
+            for it in items:
+                t_u = it.get("url", "").strip()
+                anc = it.get("anchor", "").strip() or "(Image / No Text)"
+                if t_u.startswith("http") and t_u not in link_sources:
+                    link_sources[t_u] = (src, anc)
+        except Exception:
+            continue
+
+    known_200 = set(df_crawl[df_crawl["Status"] == 200]["URL"].tolist())
+    candidates = [u for u in link_sources.keys() if u not in known_200][:max_links]
+
+    def probe_url(u):
+        src_u, anc_txt = link_sources[u]
+        try:
+            resp = requests.get(u, headers=headers, timeout=8, allow_redirects=True)
+            code_st = resp.status_code
+            hops = len(resp.history)
+            if code_st >= 400:
+                issue = f"🔴 Broken Link (HTTP {code_st})"
+            elif hops >= 2:
+                issue = f"⚠️ Redirect Chain ({hops} hops)"
+            elif hops == 1:
+                issue = f"🟡 301/302 Redirect -> {clean_display_url(resp.url)}"
+            else:
+                issue = "🟢 Healthy (200 OK)"
+            return {
+                "Status_Flag": issue,
+                "HTTP_Code": code_st,
+                "Target_URL": u,
+                "Final_Destination": clean_display_url(resp.url),
+                "Anchor_Text": anc_txt[:60],
+                "Found_On_Page": src_u
+            }
+        except Exception:
+            return {
+                "Status_Flag": "🔴 Connection / Timeout Error",
+                "HTTP_Code": 0,
+                "Target_URL": u,
+                "Final_Destination": "Unreachable",
+                "Anchor_Text": anc_txt[:60],
+                "Found_On_Page": src_u
+            }
+
+    if not candidates:
+        return pd.DataFrame()
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        probed = list(ex.map(probe_url, candidates))
+    df_probed = pd.DataFrame(probed)
+    df_probed["sort_pri"] = df_probed["Status_Flag"].apply(lambda x: 0 if "Broken" in x or "Error" in x else (1 if "Redirect" in x else 2))
+    df_probed = df_probed.sort_values(by=["sort_pri", "HTTP_Code"]).drop(columns=["sort_pri"]).reset_index(drop=True)
+    return df_probed
+
+def build_master_audit_excel(
+    df_c, df_r, df_a, df_eq, df_can, df_ads, df_broken, brand_name, scope_label,
+    df_serp_ads=None, df_brand_serp=None, df_cwv_batch=None, crawly_data=None,
+    df_mentions=None, robots_data=None, first_party_summary=None
+):
+    """Generates a comprehensive multi-tab styled Excel workbook (.xlsx) integrating every audit module."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = openpyxl.Workbook()
+    ws_sum = wb.active
+    ws_sum.title = "Executive_Summary"
+
+    header_fill = PatternFill(start_color="004B93", end_color="004B93", fill_type="solid")
+    zebra_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    title_font = Font(name="Calibri", size=14, bold=True, color="004B93")
+    reg_font = Font(name="Calibri", size=10, color="1E293B")
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1")
+    )
+
+    def style_worksheet(ws, df_data, title_banner=None):
+        start_row = 1
+        if title_banner:
+            ws.cell(row=1, column=1, value=title_banner).font = title_font
+            start_row = 3
+        if df_data is None or df_data.empty:
+            ws.cell(row=start_row, column=1, value="No data recorded for this module during the current session.").font = reg_font
+            return
+        clean_df = df_data.copy()
+        for col_c in clean_df.columns:
+            clean_df[col_c] = clean_df[col_c].apply(lambda v: str(v) if isinstance(v, (list, dict)) else v)
+
+        for c_idx, col_name in enumerate(clean_df.columns, 1):
+            cell = ws.cell(row=start_row, column=c_idx, value=str(col_name))
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            cell.border = thin_border
+
+        for r_idx, row_vals in enumerate(clean_df.itertuples(index=False), start_row + 1):
+            for c_idx, val in enumerate(row_vals, 1):
+                cell = ws.cell(row=r_idx, column=c_idx, value=val)
+                cell.font = reg_font
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if r_idx % 2 == 0:
+                    cell.fill = zebra_fill
+
+        ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
+        for col in ws.columns:
+            max_len = 12
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.row >= start_row and cell.value is not None:
+                    val_len = min(55, len(str(cell.value)))
+                    if val_len > max_len:
+                        max_len = val_len
+            ws.column_dimensions[col_letter].width = max_len + 4
+
+    tot_p = len(df_c) if not df_c.empty else 0
+    schema_pct = round(df_c["Commercial_Schema"].sum() / max(1, tot_p) * 100, 1) if not df_c.empty else 0.0
+    thin_cnt = int((df_c["Word_Count"] < 300).sum()) if not df_c.empty else 0
+    miss_alt = int(df_c["Missing_Alt_Count"].sum()) if (not df_c.empty and "Missing_Alt_Count" in df_c.columns) else 0
+    avg_a11y = round(df_c["A11y_Score"].mean(), 1) if (not df_c.empty and "A11y_Score" in df_c.columns) else 0.0
+
+    summary_rows = [
+        {"Audit Dimension": "Client / Brand", "Measured Value": brand_name, "Notes": scope_label},
+        {"Audit Dimension": "Audit Date", "Measured Value": datetime.now().strftime("%Y-%m-%d"), "Notes": "Generated by Connext Enterprise Digital & AEO Suite"},
+        {"Audit Dimension": "Total HTML Pages Audited", "Measured Value": tot_p, "Notes": "Full page crawl inventory"},
+        {"Audit Dimension": "Rich Commercial / FAQ Schema Coverage", "Measured Value": f"{schema_pct}%", "Notes": "Target: 100% across commercial & informational pages"},
+        {"Audit Dimension": "Thin Content Pages (<300 Words)", "Measured Value": thin_cnt, "Notes": "Pages requiring content expansion"},
+        {"Audit Dimension": "Total Images Missing Alt Text", "Measured Value": miss_alt, "Notes": "WCAG 2.1 AA & Image SEO compliance"},
+        {"Audit Dimension": "Average Accessibility (WCAG) Score", "Measured Value": f"{avg_a11y}/100", "Notes": "Target: > 90/100"}
+    ]
+    if crawly_data and crawly_data.get("domain_authority"):
+        summary_rows.append({"Audit Dimension": "Domain Authority (Crawly)", "Measured Value": f"{crawly_data.get('domain_authority')}/100", "Notes": f"{crawly_data.get('referring_domains', 0):,} Referring Domains | {crawly_data.get('total_backlinks', 0):,} Backlinks"})
+    if first_party_summary:
+        for fp in first_party_summary:
+            summary_rows.append({"Audit Dimension": f"First-Party ({fp.get('Source')})", "Measured Value": fp.get("Metric_1", ""), "Notes": f"{fp.get('Metric_2', '')} | {fp.get('Metric_3', '')}"})
+
+    style_worksheet(ws_sum, pd.DataFrame(summary_rows), title_banner=f"Connext Global Solutions — Master Digital Audit ({brand_name})")
+
+    if not df_c.empty:
+        drop_internal = ["Body_Text", "Tech_Tools_JSON", "Tech_Weaknesses_JSON", "Internal_Link_Targets_JSON"]
+        export_crawl_df = df_c.drop(columns=[c for c in drop_internal if c in df_c.columns], errors="ignore")
+        ws_tech = wb.create_sheet(title="Technical_and_SEO")
+        style_worksheet(ws_tech, export_crawl_df, title_banner="Complete On-Page SEO, Metadata, Headings, Schemas & Tech Stack")
+
+        # Aggregate Installed Tech Stack & Weaknesses tab
+        tools_agg = {}
+        weak_agg = {}
+        if "Tech_Tools_JSON" in df_c.columns:
+            for _, rt in df_c.iterrows():
+                try:
+                    for it in json.loads(rt.get("Tech_Tools_JSON", "[]")):
+                        tn = it["Tool"]
+                        if tn not in tools_agg:
+                            tools_agg[tn] = {**it, "Pages_Detected": 1}
+                        else:
+                            tools_agg[tn]["Pages_Detected"] += 1
+                except Exception:
+                    pass
+                try:
+                    for iw in json.loads(rt.get("Tech_Weaknesses_JSON", "[]")):
+                        weak_agg[iw["Finding"]] = iw
+                except Exception:
+                    pass
+        if tools_agg:
+            ws_stack = wb.create_sheet(title="Installed_Tech_Stack")
+            style_worksheet(ws_stack, pd.DataFrame(list(tools_agg.values())), title_banner="Detected Technologies, Pixels & Marketing Apps (Wappalyzer)")
+        if weak_agg:
+            ws_st_w = wb.create_sheet(title="Tech_Stack_Weaknesses")
+            style_worksheet(ws_st_w, pd.DataFrame(list(weak_agg.values())), title_banner="Tech Stack Weaknesses & Optimization Opportunities")
+
+    if robots_data and robots_data.get("ai_bots"):
+        ws_rob = wb.create_sheet(title="Robots_AI_Bots")
+        style_worksheet(ws_rob, pd.DataFrame(robots_data["ai_bots"]), title_banner="Robots.txt & AI Search Bot Governance")
+
+    if df_broken is not None and not df_broken.empty:
+        ws_brk = wb.create_sheet(title="Links_and_Redirects")
+        style_worksheet(ws_brk, df_broken, title_banner="Internal Link Health & Redirect Diagnostics")
+
+    if df_eq is not None and not df_eq.empty:
+        ws_eq = wb.create_sheet(title="Internal_Link_Equity")
+        style_worksheet(ws_eq, df_eq, title_banner="Internal Link Equity & Content Silo Flow")
+
+    if df_can is not None and not df_can.empty:
+        ws_can = wb.create_sheet(title="Duplicate_Cannibalization")
+        style_worksheet(ws_can, df_can, title_banner="Content Overlap & Keyword Cannibalization Pairs")
+
+    if df_brand_serp is not None and not df_brand_serp.empty:
+        ws_br = wb.create_sheet(title="Brand_SERP_Top_Pages")
+        style_worksheet(ws_br, df_brand_serp, title_banner="Branded Search Results & Top Valuable Sitelink Pages")
+
+    if df_r is not None and not df_r.empty:
+        ws_serp = wb.create_sheet(title="Organic_SERP_Rankings")
+        style_worksheet(ws_serp, df_r.drop(columns=["Top_10_JSON"], errors="ignore"), title_banner="Live Google Organic Search Rankings & Page-1 Leaders")
+
+    if df_a is not None and not df_a.empty:
+        ws_aeo = wb.create_sheet(title="Generative_AEO_Citations")
+        style_worksheet(ws_aeo, df_a, title_banner="Google AI Overviews & Generative Engine Citations")
+
+    if df_ads is not None and not df_ads.empty:
+        ws_ads = wb.create_sheet(title="Paid_Ads_Portfolio")
+        style_worksheet(ws_ads, df_ads.drop(columns=["Format", "Type"], errors="ignore"), title_banner="Google Ads Transparency Center Portfolio & Longevity")
+
+    if df_serp_ads is not None and not df_serp_ads.empty:
+        ws_sads = wb.create_sheet(title="Live_Competitor_Search_Ads")
+        style_worksheet(ws_sads, df_serp_ads, title_banner="Live Google Search Paid SERP & Competitor Conquesting")
+
+    if df_cwv_batch is not None and not df_cwv_batch.empty:
+        ws_cwv = wb.create_sheet(title="Speed_Core_Web_Vitals")
+        style_worksheet(ws_cwv, df_cwv_batch, title_banner="Mobile Core Web Vitals Multi-Template Benchmark")
+
+    if crawly_data and crawly_data.get("backlinks"):
+        ws_bl = wb.create_sheet(title="Inbound_Backlinks")
+        style_worksheet(ws_bl, pd.DataFrame(crawly_data["backlinks"]), title_banner="Inbound Backlink Profile (Crawly Index)")
+
+    if df_mentions is not None and not df_mentions.empty:
+        ws_mn = wb.create_sheet(title="Unlinked_Brand_Mentions")
+        style_worksheet(ws_mn, df_mentions, title_banner="Open-Web Unlinked Brand Mentions (Digital PR Opportunities)")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 def query_crawly_seo(domain, api_key):
     """Fetches Domain Authority, Referring Domains, and Backlinks via Crawly Free API (No credit card)."""
     if not api_key or not domain:
@@ -999,7 +1319,7 @@ with st.sidebar:
             "df_equity", "suggested_organic_kws", "suggested_aeo_prompts",
             "df_organic_suggestions", "df_aeo_suggestions", "detected_industry",
             "sec_headers", "cwv_metrics", "crux_metrics", "safe_browsing",
-            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64", "df_brand_serp", "brand_sitelinks", "brand_kg_panel", "cwv_tested_url"
+            "kg_info", "nlp_categories", "prev_snapshot", "is_thin_site", "target_domain", "crawly_data", "df_mentions", "discovered_sitemaps", "compiled_summary_pdf_bytes", "compiled_dossier_pdf_bytes", "df_serp_ads", "ads_ai_strategy", "cached_logo_b64", "df_brand_serp", "brand_sitelinks", "brand_kg_panel", "cwv_tested_url", "cwv_desktop_metrics", "df_cwv_batch", "robots_audit_data", "df_broken_links", "master_xlsx_bytes", "first_party_summary", "df_gsc_quickwins", "df_ga4_top_pages"
         ]
         for k in keys_to_clear:
             st.session_state.pop(k, None)
@@ -1055,6 +1375,13 @@ if "df_brand_serp" not in st.session_state: st.session_state["df_brand_serp"] = 
 if "brand_sitelinks" not in st.session_state: st.session_state["brand_sitelinks"] = []
 if "brand_kg_panel" not in st.session_state: st.session_state["brand_kg_panel"] = {}
 if "cwv_tested_url" not in st.session_state: st.session_state["cwv_tested_url"] = ""
+if "cwv_desktop_metrics" not in st.session_state: st.session_state["cwv_desktop_metrics"] = {}
+if "df_cwv_batch" not in st.session_state: st.session_state["df_cwv_batch"] = pd.DataFrame()
+if "robots_audit_data" not in st.session_state: st.session_state["robots_audit_data"] = {}
+if "df_broken_links" not in st.session_state: st.session_state["df_broken_links"] = pd.DataFrame()
+if "first_party_summary" not in st.session_state: st.session_state["first_party_summary"] = []
+if "df_gsc_quickwins" not in st.session_state: st.session_state["df_gsc_quickwins"] = pd.DataFrame()
+if "df_ga4_top_pages" not in st.session_state: st.session_state["df_ga4_top_pages"] = pd.DataFrame()
 if "df_cannibal" not in st.session_state: st.session_state["df_cannibal"] = pd.DataFrame()
 if "df_equity" not in st.session_state: st.session_state["df_equity"] = pd.DataFrame()
 if "suggested_organic_kws" not in st.session_state: st.session_state["suggested_organic_kws"] = ""
@@ -1269,13 +1596,6 @@ with tab_arch:
                 has_llms = False
             st.session_state["has_llms"] = has_llms
 
-            try:
-                robots_r = requests.get(f"{root}/robots.txt", headers=HEADERS, timeout=5)
-                has_robots = (robots_r.status_code == 200)
-            except Exception:
-                has_robots = False
-            st.session_state["has_robots"] = has_robots
-
             # E. Recursive XML Sitemap Index, Category Unpacker & Internal Spider
             if crawl_mode == "🎯 Specific / Unique URLs (Direct Audit)":
                 custom_urls = [u.strip() for u in specific_urls_input.split("\n") if u.strip().startswith("http")]
@@ -1285,11 +1605,21 @@ with tab_arch:
                 url_pool, sm_log = discover_target_urls(root, target_site, slug_filter, crawl_limit, HEADERS, whole_website=whole_website_mode)
                 st.session_state["discovered_sitemaps"] = sm_log
 
+            robots_audit = audit_robots_and_ai_bots(root, url_pool, HEADERS)
+            st.session_state["has_robots"] = robots_audit.get("exists", False)
+            st.session_state["robots_audit_data"] = robots_audit
+
             # F. Complete On-Page SEO, Metadata, Content Depth, Readability, Schema & WCAG Auditor
             def audit_page(url):
                 res = {
                     "URL": url,
                     "Status": 0,
+                    "Response_Time_ms": 0,
+                    "Redirect_Hops": 0,
+                    "Redirect_Chain": "Direct (200)",
+                    "Indexability_Status": "Indexable",
+                    "URL_Depth": len([p for p in urlparse(url).path.split("/") if p]),
+                    "Internal_Link_Targets_JSON": "[]",
                     "Meta_Title": "Missing",
                     "Meta_Title_Length": 0,
                     "Meta_Title_Status": "Missing",
@@ -1341,6 +1671,15 @@ with tab_arch:
                 try:
                     r = requests.get(url, headers=HEADERS, timeout=10)
                     res["Status"] = r.status_code
+                    res["Response_Time_ms"] = round(r.elapsed.total_seconds() * 1000)
+                    hops = len(r.history)
+                    res["Redirect_Hops"] = hops
+                    if hops > 0:
+                        chain_codes = " -> ".join([str(h.status_code) for h in r.history] + [str(r.status_code)])
+                        res["Redirect_Chain"] = f"{chain_codes} ({clean_display_url(r.url)})"
+                    x_rob = r.headers.get("X-Robots-Tag", "").lower()
+                    if "noindex" in x_rob:
+                        res["Indexability_Status"] = "🔴 Blocked by X-Robots-Tag (noindex)"
                     if r.status_code == 200:
                         soup = BeautifulSoup(r.text, "html.parser")
                         
@@ -1434,21 +1773,28 @@ with tab_arch:
                         vague_count = 0
                         int_links = 0
                         ext_links = 0
+                        int_link_targets = []
+                        seen_int_targets = set()
                         page_netloc = urlparse(url).netloc.replace("www.", "")
                         for a in soup.find_all("a", href=True):
-                            txt = a.get_text(strip=True).lower()
+                            raw_txt = a.get_text(strip=True)
+                            txt = raw_txt.lower()
                             if txt in vague_terms:
                                 vague_count += 1
                             href_val = a["href"].strip()
                             if href_val and not href_val.startswith(("#", "javascript:", "mailto:", "tel:")):
-                                full_a = urljoin(url, href_val)
+                                full_a = urljoin(url, href_val).split("#")[0]
                                 if page_netloc in urlparse(full_a).netloc.replace("www.", ""):
                                     int_links += 1
+                                    if full_a not in seen_int_targets and len(int_link_targets) < 35:
+                                        seen_int_targets.add(full_a)
+                                        int_link_targets.append({"url": full_a, "anchor": raw_txt[:60]})
                                 else:
                                     ext_links += 1
                         res["Vague_Links_Count"] = vague_count
                         res["Internal_Links_Count"] = int_links
                         res["External_Links_Count"] = ext_links
+                        res["Internal_Link_Targets_JSON"] = json.dumps(int_link_targets)
                         
                         unlabeled_btns = 0
                         for b in soup.find_all("button"):
@@ -1669,12 +2015,13 @@ Respond strictly in valid JSON format:
         ck3.metric("Avg. AEO Readiness Score", f"{avg_aeo_ready}/100", help="Measures direct answer structure, H2/H3 depth, lists/tables, FAQ presence & schemas.")
         ck4.metric("Sitemaps Unpacked", f"{len(st.session_state.get('discovered_sitemaps', []))} XML files")
 
-        xray_tab1, xray_tab2, xray_tab3, xray_tab4, xray_tab5 = st.tabs([
+        xray_tab1, xray_tab2, xray_tab3, xray_tab4, xray_tab5, xray_tab6 = st.tabs([
             "🏷️ 1. Meta Title & Meta Description Matrix",
             "📑 2. H1–H6 Headings & Image Alt Text Audit",
             "🔎 3. Single-Page Deep X-Ray & AI Copywriter",
             "🛠️ 4. Installed Apps & Tech Stack (Wappalyzer)",
-            "🗺️ 5. Unpacked XML Sitemaps Log"
+            "🤖 5. Robots.txt, AI Bots & Broken Links",
+            "🗺️ 6. Unpacked XML Sitemaps Log"
         ])
 
         with xray_tab1:
@@ -1803,6 +2150,39 @@ Provide an actionable, publication-ready optimization plan with:
                 st.dataframe(pd.DataFrame(list(all_weaknesses_map.values())), hide_index=True, use_container_width=True)
 
         with xray_tab5:
+            st.markdown("##### 🤖 Robots.txt & AI Crawler Governance (GPTBot, ClaudeBot, PerplexityBot, Google-Extended)")
+            rob_data = st.session_state.get("robots_audit_data", {})
+            if rob_data.get("ai_bots"):
+                rb1, rb2, rb3 = st.columns(3)
+                rb1.metric("robots.txt File Status", "✓ Active (200)" if rob_data.get("exists") else "⚠️ Not Found")
+                rb2.metric("Sitemaps Declared in robots.txt", len(rob_data.get("sitemaps_declared", [])))
+                rb3.metric("Crawled URLs Blocked by Disallow", len(rob_data.get("blocked_target_urls", [])), delta="Blocked URLs!" if rob_data.get("blocked_target_urls") else "0 Blocked", delta_color="inverse" if rob_data.get("blocked_target_urls") else "normal")
+                st.dataframe(pd.DataFrame(rob_data["ai_bots"]), hide_index=True, use_container_width=True)
+                if rob_data.get("blocked_target_urls"):
+                    st.error("🚨 The following target URLs are blocked by Disallow directives in robots.txt:")
+                    st.dataframe(pd.DataFrame(rob_data["blocked_target_urls"]), hide_index=True, use_container_width=True)
+            else:
+                st.info("Run the site audit above to inspect robots.txt and AI crawler permissions.")
+
+            st.markdown("##### 🔀 HTTP Redirect Chains, Indexability & Server Response Latency (TTFB)")
+            tech_gov_cols = [c for c in ["URL", "Status", "Indexability_Status", "Redirect_Hops", "Redirect_Chain", "Response_Time_ms", "URL_Depth"] if c in display_df.columns]
+            if tech_gov_cols:
+                st.dataframe(display_df[tech_gov_cols], hide_index=True, use_container_width=True)
+
+            st.markdown("##### 🔗 Broken Internal Links & Redirect Probe (404 / 301 / 5xx Scanner)")
+            if st.button("🔎 Scan Internal Links for 404 Broken Pages & Redirects", key="btn_probe_links"):
+                with st.spinner("Probing internal links across crawled pages for 404/5xx errors and redirects..."):
+                    df_brk = verify_internal_links_health(df, HEADERS, max_links=60)
+                    st.session_state["df_broken_links"] = df_brk
+                    if df_brk.empty:
+                        st.success("✓ All internal links on the crawled pages are already verified HTTP 200 OK!")
+                    else:
+                        broken_only = df_brk[df_brk["Status_Flag"].str.contains("Broken|Error", na=False)]
+                        st.success(f"✓ Probed {len(df_brk)} internal links — found {len(broken_only)} broken link(s).")
+            if not st.session_state.get("df_broken_links", pd.DataFrame()).empty:
+                st.dataframe(st.session_state["df_broken_links"], hide_index=True, use_container_width=True)
+
+        with xray_tab6:
             st.markdown("##### Unpacked XML Sitemap Index & Category Discovery Log")
             if st.session_state.get("discovered_sitemaps"):
                 st.dataframe(pd.DataFrame(st.session_state["discovered_sitemaps"]), use_container_width=True)
@@ -2504,8 +2884,9 @@ with tab_aeo:
 
     if not st.session_state["df_aeo"].empty:
         df_a = st.session_state["df_aeo"]
-        competitor_wins = (df_a["Target_Cited"] == "🔴 Omitted").sum()
-        loss_rate = (competitor_wins / len(df_a)) * 100
+        valid_a_ui = df_a[~df_a["Target_Cited"].astype(str).str.contains("Error|Timeout", case=False, na=False)]
+        competitor_wins = (valid_a_ui["Target_Cited"] == "🔴 Omitted").sum()
+        loss_rate = (competitor_wins / max(1, len(valid_a_ui))) * 100
         
         st.metric("Generative AI Competitor Win Rate", f"{loss_rate:.1f}%", help="Percentage of AI Overviews won by competitors or third parties.")
         
@@ -3086,9 +3467,18 @@ with tab_first_party:
                     g3.metric("Average Organic CTR", avg_ctr)
                     g4.metric("Average Organic Position", avg_pos)
 
+                    st.session_state["first_party_summary"] = [
+                        s for s in st.session_state.get("first_party_summary", []) if s.get("Source") != f"GSC ({file_name})"
+                    ] + [{
+                        "Source": f"GSC ({file_name})",
+                        "Metric_1": f"{tot_clicks:,} Total Clicks",
+                        "Metric_2": f"{tot_impressions:,} Impressions",
+                        "Metric_3": f"Avg CTR: {avg_ctr} | Avg Pos: {avg_pos}"
+                    }]
                     if pos_cols:
                         quick_wins = df_up[(df_up[i_col] >= 150) & (df_up[pos_cols[0]] >= 7.0) & (df_up[pos_cols[0]] <= 22.0)].sort_values(by=i_col, ascending=False)
                         if not quick_wins.empty:
+                            st.session_state["df_gsc_quickwins"] = quick_wins[[q_col, c_col, i_col, pos_cols[0]]].head(15).copy()
                             st.markdown("##### 🚀 Quick Win Keyword Opportunities (Page 2 Terms with High Search Demand)")
                             st.dataframe(quick_wins[[q_col, c_col, i_col, pos_cols[0]]].head(10), use_container_width=True)
 
@@ -3115,9 +3505,18 @@ with tab_first_party:
                     a3.metric("Total Visitors", f"{tot_users:,}" if isinstance(tot_users, int) else "N/A")
                     a4.metric("Total Goal Conversions", f"{tot_convs:,}")
 
+                    st.session_state["first_party_summary"] = [
+                        s for s in st.session_state.get("first_party_summary", []) if s.get("Source") != f"GA4 ({file_name})"
+                    ] + [{
+                        "Source": f"GA4 ({file_name})",
+                        "Metric_1": f"{tot_sessions:,} Sessions",
+                        "Metric_2": f"{tot_convs:,} Conversions",
+                        "Metric_3": f"{len(df_up)} Landing Pages Tracked"
+                    }]
                     st.markdown("##### Top Landing Pages by Session Volume")
-                    top_pages = df_up.sort_values(by=s_col, ascending=False).head(8)
-                    st.bar_chart(top_pages.set_index(p_col)[s_col], color="#e85122")
+                    top_pages = df_up.sort_values(by=s_col, ascending=False).head(15)
+                    st.session_state["df_ga4_top_pages"] = top_pages.copy()
+                    st.bar_chart(top_pages.head(8).set_index(p_col)[s_col], color="#e85122")
                     st.dataframe(df_up.head(50), use_container_width=True)
 
                 else:
@@ -3155,8 +3554,8 @@ with tab_compare:
             "pages_audited": len(df_c),
             "commercial_schema_pct": round((df_c["Commercial_Schema"].sum() / len(df_c) * 100), 1) if not df_c.empty else 0.0,
             "mashed_h1_count": int(df_c["Concatenated_H1"].sum()) if not df_c.empty else 0,
-            "invis_pct": round(((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100), 1) if not df_r.empty else 0.0,
-            "aeo_loss_pct": round(((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100), 1) if not df_a.empty else 0.0,
+            "invis_pct": round(((df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout", case=False, na=False)]["Target_Rank"] == "> 20 (Absent)").sum() / max(1, len(df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout", case=False, na=False)])) * 100), 1) if not df_r.empty else 0.0,
+            "aeo_loss_pct": round(((df_a[~df_a["Target_Cited"].astype(str).str.contains("Error|Timeout", case=False, na=False)]["Target_Cited"] == "🔴 Omitted").sum() / max(1, len(df_a[~df_a["Target_Cited"].astype(str).str.contains("Error|Timeout", case=False, na=False)])) * 100), 1) if not df_a.empty else 0.0,
             "orphan_pct": round(((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100), 1) if not df_eq.empty and "Inbound_Editorial_Links" in df_eq.columns else 0.0,
             "cannibal_pairs_count": len(df_can),
             "perf_score": cwv_data.get("Score", "N/A"),
@@ -3348,8 +3747,10 @@ with tab_dashboard:
         total_pages = len(df_c)
         is_thin_site = (total_pages <= 2)
         schema_pct = (df_c["Commercial_Schema"].sum() / total_pages * 100) if total_pages > 0 else 0.0
-        invis_pct = ((df_r["Target_Rank"] == "> 20 (Absent)").sum() / len(df_r) * 100) if not df_r.empty else 100.0
-        aeo_loss_pct = ((df_a["Target_Cited"] == "🔴 Omitted").sum() / len(df_a) * 100) if not df_a.empty else 100.0
+        valid_r_dash = df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout", case=False, na=False)] if not df_r.empty else pd.DataFrame()
+        valid_a_dash = df_a[~df_a["Target_Cited"].astype(str).str.contains("Error|Timeout", case=False, na=False)] if not df_a.empty else pd.DataFrame()
+        invis_pct = ((valid_r_dash["Target_Rank"] == "> 20 (Absent)").sum() / max(1, len(valid_r_dash)) * 100) if not valid_r_dash.empty else 100.0
+        aeo_loss_pct = ((valid_a_dash["Target_Cited"] == "🔴 Omitted").sum() / max(1, len(valid_a_dash)) * 100) if not valid_a_dash.empty else 100.0
         orphan_pct = ((df_eq["Inbound_Editorial_Links"] == 0).sum() / len(df_eq) * 100) if not df_eq.empty and "Inbound_Editorial_Links" in df_eq.columns else 100.0
         mashed_count = int(df_c["Concatenated_H1"].sum())
         thin_content_count = int((df_c["Word_Count"] < 300).sum()) if "Word_Count" in df_c.columns else 0
@@ -3493,9 +3894,20 @@ def build_executive_summary_1page_html(
     df_c, df_r, df_a, df_eq, df_can, df_ads,
     cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot,
     target_name, has_llms, logo_url, crawly_data=None,
-    section_label="", client_name=""
+    section_label="", client_name="",
+    df_serp_ads=None, df_brand_serp=None, brand_sitelinks=None,
+    df_broken_links=None, robots_data=None, df_mentions=None,
+    first_party_summary=None
 ):
     crawly_data = crawly_data or {}
+    df_serp_ads = df_serp_ads if df_serp_ads is not None else pd.DataFrame()
+    df_brand_serp = df_brand_serp if df_brand_serp is not None else pd.DataFrame()
+    brand_sitelinks = brand_sitelinks or []
+    df_broken_links = df_broken_links if df_broken_links is not None else pd.DataFrame()
+    robots_data = robots_data or {}
+    df_mentions = df_mentions if df_mentions is not None else pd.DataFrame()
+    first_party_summary = first_party_summary or []
+
     total_pages = len(df_c) if not df_c.empty else 0
     is_single_or_thin = (total_pages <= 2)
     clean_host = urlparse(target_name).netloc.replace("www.", "") or target_name
@@ -3511,6 +3923,7 @@ def build_executive_summary_1page_html(
     missing_meta_cnt = int(((df_c["Meta_Title_Status"] == "Missing") | (df_c["Meta_Desc_Status"] == "Missing")).sum()) if (not df_c.empty and "Meta_Title_Status" in df_c.columns) else 0
     mashed_count = int(df_c["Concatenated_H1"].sum()) if (not df_c.empty and "Concatenated_H1" in df_c.columns) else 0
     avg_a11y = round(df_c["A11y_Score"].mean()) if (not df_c.empty and "A11y_Score" in df_c.columns) else 75
+    miss_alt_total = int(df_c["Missing_Alt_Count"].sum()) if (not df_c.empty and "Missing_Alt_Count" in df_c.columns) else 0
 
     valid_r = df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout|Skipped", case=False, na=False)] if not df_r.empty else pd.DataFrame()
     has_serp = not valid_r.empty
@@ -3528,6 +3941,8 @@ def build_executive_summary_1page_html(
 
     has_ads = not df_ads.empty
     search_ads_cnt = int(df_ads["Channel"].str.contains("Search", case=False, na=False).sum()) if (has_ads and "Channel" in df_ads.columns) else 0
+    conquest_cnt = int(df_serp_ads["Competitor_Status"].str.contains("Conquesting", case=False, na=False).sum()) if (not df_serp_ads.empty and "Competitor_Status" in df_serp_ads.columns) else 0
+    broken_cnt = int(df_broken_links["Status_Flag"].str.contains("Broken|Error", case=False, na=False).sum()) if (not df_broken_links.empty and "Status_Flag" in df_broken_links.columns) else 0
 
     sec_grade = sec_res.get("Grade", "Verified")
     cwv_score = cwv_res.get("Score", "N/A")
@@ -3568,6 +3983,9 @@ def build_executive_summary_1page_html(
         whats_working.append("<strong>AI Crawler Guide Active (<code>/llms.txt</code>):</strong> Your site publishes an <code>llms.txt</code> directory so AI tools like ChatGPT and Perplexity can read your offerings.")
     if comm_schema_cnt > 0:
         whats_working.append(f"<strong>Structured Data Found on {comm_schema_cnt} Page(s):</strong> Search engines can read structured business tags on {comm_schema_pct:.0f}% of the pages in this batch.")
+    if brand_sitelinks:
+        sl_names = ", ".join([esc(s.get("Sitelink_Title", "")) for s in brand_sitelinks[:3] if s.get("Sitelink_Title")])
+        whats_working.append(f"<strong>Google Branded Sitelinks Active:</strong> Google highlights key pages ({sl_names}) directly under your #1 branded search result.")
     if mashed_count == 0:
         whats_working.append("<strong>Clean Page Headlines:</strong> All main headings (H1 tags) are properly spaced and easy for search engines to read.")
     if has_ads and search_ads_cnt > 0:
@@ -3585,15 +4003,21 @@ def build_executive_summary_1page_html(
     if thin_cnt > 0:
         sample_thin = ", ".join([esc(urlparse(u).path or "/") for u in thin_pages_df["URL"].head(2)])
         priority_fixes.append(f"<strong>Expand Thin Copy on {thin_cnt} Page(s) (&lt;300 Words):</strong> Pages like <code>{sample_thin}</code> have very little text, making it hard for Google or AI tools to rank them.")
+    if conquest_cnt > 0:
+        priority_fixes.append(f"<strong>Defend Branded Search ({conquest_cnt} Competitor Conquesting Ad(s)):</strong> Rivals are bidding on your brand name on Google Search. Maintain exact-match brand search protection.")
+    if broken_cnt > 0:
+        priority_fixes.append(f"<strong>Fix {broken_cnt} Broken Internal Link(s):</strong> Dead internal links hurt visitor navigation and waste search engine crawl budget.")
     if has_can and dup_pairs_cnt > 0:
-        priority_fixes.append(f"<strong>Consolidate {dup_pairs_cnt} Duplicate Page Pair(s):</strong> Several URLs in this batch share identical text (100% overlap), which splits ranking power. Merge duplicates or point canonical tags to one primary page.")
+        priority_fixes.append(f"<strong>Consolidate {dup_pairs_cnt} Duplicate Page Pair(s):</strong> Several URLs in this batch share identical text, splitting ranking power. Merge duplicates or set canonical tags.")
     if mashed_count > 0:
         mashed_urls = ", ".join([esc(urlparse(u).path or "/") for u in df_c[df_c["Concatenated_H1"]]["URL"].head(2)])
-        priority_fixes.append(f"<strong>Fix Merged Headline Words ({mashed_count} Page(s)):</strong> Styling on <code>{mashed_urls}</code> removes spaces between words in the main headline, confusing search crawlers.")
+        priority_fixes.append(f"<strong>Fix Merged Headline Words ({mashed_count} Page(s)):</strong> Styling on <code>{mashed_urls}</code> removes spaces between words in the main headline.")
+    if miss_alt_total > 0:
+        priority_fixes.append(f"<strong>Add Alt Descriptions to {miss_alt_total} Image(s):</strong> Descriptive alt tags improve image search visibility and screen-reader accessibility.")
     if has_serp and invis_pct > 40:
-        priority_fixes.append(f"<strong>Improve Non-Branded Google Visibility ({invis_pct:.0f}% Off Page 1–2):</strong> While branded terms rank well, prospective customers searching general category terms are finding competitors first.")
+        priority_fixes.append(f"<strong>Improve Non-Branded Google Visibility ({invis_pct:.0f}% Off Page 1–2):</strong> Prospective customers searching general category terms are finding competitors first.")
     if has_aeo and aeo_loss_pct > 50:
-        priority_fixes.append(f"<strong>Win Citations in AI Answers ({aeo_loss_pct:.0f}% Omitted):</strong> Add clear, direct Q&amp;A sections at the top of these pages so Google AI Overviews and ChatGPT quote {esc(brand_display)}.")
+        priority_fixes.append(f"<strong>Win Citations in AI Answers ({aeo_loss_pct:.0f}% Omitted):</strong> Add direct Q&amp;A sections on key pages so Google AI Overviews and ChatGPT quote {esc(brand_display)}.")
     if "s" in raw_lcp:
         try:
             if float(raw_lcp.replace("s", "").replace(",", "").strip()) > 3.0:
@@ -3601,7 +4025,7 @@ def build_executive_summary_1page_html(
         except Exception:
             pass
     if has_eq and orphan_cnt > 0:
-        priority_fixes.append(f"<strong>Connect {orphan_cnt} Unlinked Page(s):</strong> Add internal links from your main guides and blog posts to these pages so visitors and Google discover them easily.")
+        priority_fixes.append(f"<strong>Connect {orphan_cnt} Unlinked Page(s):</strong> Add internal links from your main guides and blog posts to these pages.")
 
     if not whats_working:
         whats_working.append("<strong>Clean Technical Foundation:</strong> Pages load with HTTP 200 status and pass basic crawlability checks.")
@@ -3632,12 +4056,12 @@ def build_executive_summary_1page_html(
                 action_note = "Strong baseline — add Q&amp;A block"
                 action_color = "#16a34a"
 
-            table_rows += f'''<tr>
+            table_rows += f"""<tr>
                 <td style="font-family:monospace; font-size:6.4pt; word-break:break-all;">{esc(u_clean)}</td>
                 <td style="text-align:center;">{w_cnt:,}</td>
                 <td style="text-align:center; color:{'#16a34a' if has_comm else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_comm else 'Missing'}</td>
                 <td style="color:{action_color}; font-weight:bold;">{action_note}</td>
-            </tr>'''
+            </tr>"""
 
     w_list_html = "".join([f"<li>{x}</li>" for x in whats_working[:4]])
     f_list_html = "".join([f"<li>{x}</li>" for x in priority_fixes[:5]])
@@ -3650,7 +4074,7 @@ def build_executive_summary_1page_html(
     meta_extras.append(f"<span><strong>Accessibility:</strong> {avg_a11y}/100</span>")
     meta_extras.append(f"<span><strong>AI Guide (llms.txt):</strong> {'Active' if has_llms else 'Missing'}</span>")
 
-    html_1p = f'''<!DOCTYPE html>
+    html_1p = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -3843,7 +4267,7 @@ def build_executive_summary_1page_html(
         </tbody>
     </table>
 </body>
-</html>'''
+</html>"""
     return weasyprint.HTML(string=html_1p).write_pdf()
 
 
@@ -3851,9 +4275,25 @@ def build_executive_dossier_html(
     df_c, df_r, df_a, df_eq, df_can, df_ads,
     cwv_res, crux_res, sec_res, sb_res, kg_info, prev_snapshot,
     target_name, has_llms, logo_url, crawly_data=None,
-    section_label="", client_name=""
+    section_label="", client_name="",
+    df_serp_ads=None, df_brand_serp=None, brand_sitelinks=None,
+    cwv_desktop_res=None, df_cwv_batch=None, df_broken_links=None,
+    robots_data=None, df_mentions=None, first_party_summary=None,
+    df_gsc_quickwins=None, df_ga4_top_pages=None
 ):
     crawly_data = crawly_data or {}
+    df_serp_ads = df_serp_ads if df_serp_ads is not None else pd.DataFrame()
+    df_brand_serp = df_brand_serp if df_brand_serp is not None else pd.DataFrame()
+    brand_sitelinks = brand_sitelinks or []
+    cwv_desktop_res = cwv_desktop_res or {}
+    df_cwv_batch = df_cwv_batch if df_cwv_batch is not None else pd.DataFrame()
+    df_broken_links = df_broken_links if df_broken_links is not None else pd.DataFrame()
+    robots_data = robots_data or {}
+    df_mentions = df_mentions if df_mentions is not None else pd.DataFrame()
+    first_party_summary = first_party_summary or []
+    df_gsc_quickwins = df_gsc_quickwins if df_gsc_quickwins is not None else pd.DataFrame()
+    df_ga4_top_pages = df_ga4_top_pages if df_ga4_top_pages is not None else pd.DataFrame()
+
     total_pages = len(df_c) if not df_c.empty else 0
     is_single_or_thin = (total_pages <= 2)
     clean_host = urlparse(target_name).netloc.replace("www.", "") or target_name
@@ -3870,6 +4310,31 @@ def build_executive_dossier_html(
     mashed_count = int(df_c["Concatenated_H1"].sum()) if (not df_c.empty and "Concatenated_H1" in df_c.columns) else 0
     avg_a11y = round(df_c["A11y_Score"].mean()) if (not df_c.empty and "A11y_Score" in df_c.columns) else 80
     avg_aeo_ready = round(df_c["AEO_Readiness_Score"].mean()) if (not df_c.empty and "AEO_Readiness_Score" in df_c.columns) else 50
+    total_imgs_cnt = int(df_c["Images_Count"].sum()) if (not df_c.empty and "Images_Count" in df_c.columns) else 0
+    miss_alt_cnt = int(df_c["Missing_Alt_Count"].sum()) if (not df_c.empty and "Missing_Alt_Count" in df_c.columns) else 0
+
+    tools_agg = {}
+    stack_weaknesses_list = []
+    seen_w_findings = set()
+    if not df_c.empty and "Tech_Tools_JSON" in df_c.columns:
+        for _, rt in df_c.iterrows():
+            try:
+                for it in json.loads(rt.get("Tech_Tools_JSON", "[]")):
+                    tn = it["Tool"]
+                    if tn not in tools_agg:
+                        tools_agg[tn] = {**it, "Pages": 1}
+                    else:
+                        tools_agg[tn]["Pages"] += 1
+            except Exception:
+                pass
+            try:
+                for iw in json.loads(rt.get("Tech_Weaknesses_JSON", "[]")):
+                    fk = iw.get("Finding", "")
+                    if fk and fk not in seen_w_findings:
+                        seen_w_findings.add(fk)
+                        stack_weaknesses_list.append(iw)
+            except Exception:
+                pass
 
     valid_r = df_r[~df_r["Target_Rank"].astype(str).str.contains("Error|Timeout|Skipped", case=False, na=False)] if not df_r.empty else pd.DataFrame()
     has_serp = not valid_r.empty
@@ -3883,7 +4348,13 @@ def build_executive_dossier_html(
     has_can = not df_can.empty
     dup_pairs_cnt = len(df_can) if has_can else 0
 
+    has_broken = not df_broken_links.empty
+    broken_only_cnt = int(df_broken_links["Status_Flag"].str.contains("Broken|Error", case=False, na=False).sum()) if (has_broken and "Status_Flag" in df_broken_links.columns) else 0
+
+    has_brand_serp = not df_brand_serp.empty
     has_ads = not df_ads.empty
+    has_serp_ads = not df_serp_ads.empty
+    conquest_cnt = int(df_serp_ads["Competitor_Status"].str.contains("Conquesting", case=False, na=False).sum()) if (has_serp_ads and "Competitor_Status" in df_serp_ads.columns) else 0
     search_ads_cnt = int(df_ads["Channel"].str.contains("Search", case=False, na=False).sum()) if (has_ads and "Channel" in df_ads.columns) else 0
 
     raw_tbt = str(cwv_res.get("TBT", "N/A"))
@@ -3906,6 +4377,9 @@ def build_executive_dossier_html(
     sec_grade = sec_res.get("Grade", "Verified")
     da_val = crawly_data.get("domain_authority", 0)
     ref_dom = crawly_data.get("referring_domains", 0)
+    tot_bl = crawly_data.get("total_backlinks", 0)
+    has_offpage = bool(da_val or not df_mentions.empty)
+    has_first_party = bool(first_party_summary or not df_gsc_quickwins.empty or not df_ga4_top_pages.empty)
 
     base_seo = max(10, round(100 - ((invis_pct * 0.55 if has_serp else 20) + (thin_cnt / max(1, total_pages) * 25) + (missing_meta_cnt / max(1, total_pages) * 20))))
     score_seo = min(base_seo, 25) if is_single_or_thin else base_seo
@@ -3918,6 +4392,20 @@ def build_executive_dossier_html(
     def badge_color(score):
         return "#16a34a" if score >= 85 else ("#f2a900" if score >= 50 else "#dc2626")
 
+    progress_banner_html = ""
+    if prev_snapshot:
+        p_dt = esc(prev_snapshot.get("snapshot_date", "Baseline"))
+        p_sch = float(prev_snapshot.get("commercial_schema_pct", 0))
+        p_inv = float(prev_snapshot.get("invis_pct", 0))
+        p_aeo = float(prev_snapshot.get("aeo_loss_pct", 0))
+        progress_banner_html = f"""
+        <div class="intro-note" style="border-left-color:#16a34a; background:#f0fdf4;">
+            <strong>Progress Comparison vs. Baseline ({p_dt}):</strong>
+            Schema Coverage: <strong>{p_sch:.0f}% &rarr; {comm_schema_pct:.0f}%</strong> ({'+' if comm_schema_pct >= p_sch else ''}{comm_schema_pct - p_sch:.0f}%)
+            {' | Search Invisibility: <strong>' + f'{p_inv:.0f}% &rarr; {invis_pct:.0f}%</strong>' if has_serp else ''}
+            {' | AI Answer Omission: <strong>' + f'{p_aeo:.0f}% &rarr; {aeo_loss_pct:.0f}%</strong>' if has_aeo else ''}
+        </div>"""
+
     crawl_rows = ""
     if not df_c.empty:
         for _, r in df_c.head(16).iterrows():
@@ -3928,14 +4416,53 @@ def build_executive_dossier_html(
             m_title_ok = (r.get("Meta_Title_Status", "") not in ("Missing", "Too Short (<30)"))
             m_desc_ok = (r.get("Meta_Desc_Status", "") not in ("Missing", "Too Short (<120)"))
             meta_lbl = "✓ Complete" if (m_title_ok and m_desc_ok) else ("Partial" if (m_title_ok or m_desc_ok) else "Missing")
-            crawl_rows += f'''<tr>
-                <td style="word-break:break-all; font-size:6.8pt; font-family:monospace;">{esc(u_clean)}</td>
+            img_c = int(r.get("Images_Count", 0))
+            miss_a = int(r.get("Missing_Alt_Count", 0))
+            alt_lbl = f"{img_c - miss_a}/{img_c}" if img_c > 0 else "0 imgs"
+            alt_col = "#16a34a" if miss_a == 0 else "#b45309"
+            crawl_rows += f"""<tr>
+                <td style="word-break:break-all; font-size:6.6pt; font-family:monospace;">{esc(u_clean)}</td>
                 <td style="text-align:center;">{w_cnt:,}</td>
                 <td style="text-align:center; color:{'#16a34a' if meta_lbl == '✓ Complete' else '#b45309'}; font-weight:bold;">{meta_lbl}</td>
-                <td style="text-align:center; color:{'#dc2626' if is_mashed else '#16a34a'}; font-weight:bold;">{'Merged Words' if is_mashed else '✓ Clean'}</td>
+                <td style="text-align:center; color:{'#dc2626' if is_mashed else '#16a34a'}; font-weight:bold;">{'Merged' if is_mashed else '✓ Clean'}</td>
+                <td style="text-align:center; color:{alt_col}; font-weight:bold;">{alt_lbl}</td>
                 <td style="text-align:center; color:{'#16a34a' if has_comm else '#dc2626'}; font-weight:bold;">{'✓ Active' if has_comm else 'Missing'}</td>
                 <td style="text-align:center;">{int(r.get('A11y_Score', 80))}/100</td>
-            </tr>'''
+            </tr>"""
+
+    tech_stack_html = ""
+    if tools_agg:
+        t_rows = ""
+        for t_item in sorted(tools_agg.values(), key=lambda x: (-x["Pages"], x["Category"]))[:12]:
+            t_rows += f"""<tr>
+                <td style="font-weight:bold;">{esc(t_item['Tool'])}</td>
+                <td>{esc(t_item['Category'])}</td>
+                <td style="text-align:center;">{esc(t_item['Performance_Weight'])}</td>
+                <td style="text-align:center;">{t_item['Pages']}/{total_pages}</td>
+            </tr>"""
+        tech_stack_html = f"""
+        <div class="sub-header">Installed Technologies, Tag Managers &amp; Marketing Apps</div>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:34%;">Detected Tool / App</th>
+                    <th style="width:32%;">Category</th>
+                    <th style="width:18%; text-align:center;">Script Weight</th>
+                    <th style="width:16%; text-align:center;">Pages Found</th>
+                </tr>
+            </thead>
+            <tbody>{t_rows}</tbody>
+        </table>"""
+
+    ai_bots_row_html = ""
+    if robots_data.get("ai_bots"):
+        blocked_bots = [b["Crawler_Bot"] for b in robots_data["ai_bots"] if "Blocked" in b.get("Governance_Status", "")]
+        bot_status_txt = f"🔴 Blocked: {', '.join(blocked_bots)}" if blocked_bots else "✓ Open to GPTBot, ClaudeBot, PerplexityBot & Google-Extended"
+        ai_bots_row_html = f"""<tr>
+            <td><strong>AI Search Crawler Permissions (<code>/robots.txt</code>)</strong></td>
+            <td>{esc(bot_status_txt)}</td>
+            <td>Controls whether AI search engines can index and quote your pages.</td>
+        </tr>"""
 
     equity_rows = ""
     if has_eq:
@@ -3945,12 +4472,12 @@ def build_executive_dossier_html(
             anch = str(r.get("Sample_Anchor_Texts", r.get("Cross_Link_Anchors", "None")))[:65]
             st_text = "Well Linked" if cnt >= 2 else ("Needs More Links (1)" if cnt == 1 else "Unlinked (0 Links)")
             st_col = "#16a34a" if cnt >= 2 else ("#b45309" if cnt == 1 else "#dc2626")
-            equity_rows += f'''<tr>
+            equity_rows += f"""<tr>
                 <td style="word-break:break-all; font-size:6.8pt; font-family:monospace;">{esc(u_clean)}</td>
                 <td style="text-align:center; font-weight:bold;">{cnt}</td>
                 <td style="font-size:6.8pt;">{esc(anch)}</td>
                 <td style="text-align:center; font-weight:bold; color:{st_col};">{st_text}</td>
-            </tr>'''
+            </tr>"""
 
     can_rows = ""
     if has_can:
@@ -3958,40 +4485,97 @@ def build_executive_dossier_html(
             u1 = clean_display_url(r["URL_1"])
             u2 = clean_display_url(r["URL_2"])
             sim_val = r["Cosine_Similarity"]
-            can_rows += f'''<tr>
+            can_rows += f"""<tr>
                 <td style="word-break:break-all; font-size:6.7pt; font-family:monospace;">{esc(u1)}</td>
                 <td style="word-break:break-all; font-size:6.7pt; font-family:monospace;">{esc(u2)}</td>
                 <td style="text-align:center; font-weight:bold; color:#dc2626;">{int(float(sim_val)*100)}% Match</td>
                 <td style="text-align:center;">Consolidate / Canonicalize</td>
-            </tr>'''
+            </tr>"""
+
+    broken_rows = ""
+    if has_broken:
+        non_200 = df_broken_links[~df_broken_links["Status_Flag"].str.contains("Healthy", na=False)]
+        target_brk_df = non_200 if not non_200.empty else df_broken_links
+        for _, r in target_brk_df.head(8).iterrows():
+            st_fl = str(r.get("Status_Flag", "")).replace("🔴 ", "").replace("⚠️ ", "").replace("🟡 ", "").replace("🟢 ", "")
+            broken_rows += f"""<tr>
+                <td style="font-weight:bold; color:{'#dc2626' if 'Broken' in st_fl or 'Error' in st_fl else '#b45309'};">{esc(st_fl)}</td>
+                <td style="word-break:break-all; font-size:6.6pt; font-family:monospace;">{esc(clean_display_url(r.get('Target_URL', '')))}</td>
+                <td style="font-size:6.7pt;">{esc(r.get('Anchor_Text', ''))}</td>
+                <td style="word-break:break-all; font-size:6.6pt; font-family:monospace;">{esc(clean_display_url(r.get('Found_On_Page', '')))}</td>
+            </tr>"""
+
+    brand_serp_rows = ""
+    if has_brand_serp:
+        for _, r in df_brand_serp.head(8).iterrows():
+            own_lbl = str(r.get("Ownership", "")).replace("🟢 ", "").replace("🌐 ", "")
+            is_own_b = "Your Website" in own_lbl
+            brand_serp_rows += f"""<tr>
+                <td style="text-align:center; font-weight:bold;">{esc(r.get('SERP_Pos', ''))}</td>
+                <td style="font-weight:bold; color:{'#16a34a' if is_own_b else '#b45309'};">{esc(own_lbl)}</td>
+                <td style="font-size:6.8pt;">{esc(r.get('Page_Title_Shown_in_Google', ''))}</td>
+                <td style="word-break:break-all; font-size:6.6pt; font-family:monospace;">{esc(r.get('Displayed_URL', ''))}</td>
+            </tr>"""
 
     serp_rows = ""
+    sov_rows_html = ""
     if has_serp:
         for _, r in valid_r.head(12).iterrows():
             rk = str(r["Target_Rank"])
             r_url = clean_display_url(r["Ranking_URL"])
             comp = esc(str(r["Top_Ranking_Competitor"]))
             is_vis = rk.startswith("#")
-            serp_rows += f'''<tr>
+            serp_rows += f"""<tr>
                 <td style="font-weight:bold;">{esc(r['Keyword'])}</td>
                 <td style="text-align:center; font-weight:bold; color:{'#16a34a' if is_vis else '#dc2626'};">{esc(rk)}</td>
                 <td style="word-break:break-all; font-size:6.7pt; font-family:monospace;">{esc(r_url)}</td>
                 <td style="text-align:center;">{comp}</td>
-            </tr>'''
+            </tr>"""
+        if "Top_10_JSON" in valid_r.columns:
+            sov_map = {}
+            tot_v = max(1, len(valid_r))
+            for _, rs in valid_r.iterrows():
+                try:
+                    seen_q = set()
+                    for item in json.loads(rs.get("Top_10_JSON", "[]")):
+                        dn = item.get("domain", "")
+                        if dn and dn not in seen_q:
+                            seen_q.add(dn)
+                            sov_map.setdefault(dn, []).append(item.get("rank", 10))
+                except Exception:
+                    pass
+            for dn, rks in sorted(sov_map.items(), key=lambda kv: (-len(kv[1]), sum(kv[1])/len(kv[1])))[:6]:
+                is_me = (clean_host.lower() in dn.lower())
+                sov_rows_html += f"""<tr>
+                    <td style="font-weight:bold; color:{'#16a34a' if is_me else '#1e293b'};">{esc(dn)} {'(Your Domain)' if is_me else ''}</td>
+                    <td style="text-align:center;">{len(rks)} / {tot_v}</td>
+                    <td style="text-align:center; font-weight:bold;">{round(len(rks)/tot_v*100, 1)}%</td>
+                    <td style="text-align:center;">#{round(sum(rks)/len(rks), 1)}</td>
+                </tr>"""
 
     aeo_rows = ""
+    aeo_pr_rows = ""
     if has_aeo:
+        cited_counter = Counter()
         for _, r in valid_a.head(10).iterrows():
             cited_flag = "Yes" in str(r["Target_Cited"])
             sources_txt = str(r.get("Cited_Competitors", "None"))
+            for d_it in [x.strip() for x in sources_txt.split(",") if x.strip() and "." in x and "Summary" not in x]:
+                cited_counter[d_it] += 1
             if sources_txt in ("None", "N/A", ""):
                 sources_txt = "AI Overview Summary (No External Links)"
-            aeo_rows += f'''<tr>
+            aeo_rows += f"""<tr>
                 <td>{esc(r['Buyer_Query'])}</td>
                 <td style="text-align:center;">{esc(r['AI_Overview_Generated'])}</td>
                 <td style="text-align:center; font-weight:bold; color:{'#16a34a' if cited_flag else '#dc2626'};">{'✓ Cited' if cited_flag else 'Not Cited'}</td>
                 <td style="font-size:6.8pt;">{esc(sources_txt)}</td>
-            </tr>'''
+            </tr>"""
+        for dom_k, cnt_k in cited_counter.most_common(5):
+            aeo_pr_rows += f"""<tr>
+                <td style="font-weight:bold;">{esc(dom_k)}</td>
+                <td style="text-align:center;">{cnt_k} Prompt(s)</td>
+                <td>Secure editorial mention, review profile, or citation on this source</td>
+            </tr>"""
 
     ads_rows = ""
     if has_ads:
@@ -4011,12 +4595,24 @@ def build_executive_dossier_html(
                 f"Long-running control ad ({days_v} days active) — indicates consistent conversion performance."
                 if days_v >= 60 else f"Recent creative test ({days_v} days active)."
             )
-            ads_rows += f'''<tr>
+            ads_rows += f"""<tr>
                 <td style="font-weight:bold;">{esc(count_prefix + ch_lbl)}</td>
                 <td>{days_v} Days ({esc(f_dt)} to {esc(l_dt)})</td>
                 <td style="font-weight:bold; color:{'#16a34a' if days_v >= 60 else '#004b93'};">{esc(tier_lbl)}</td>
                 <td style="font-size:6.8pt;">{esc(takeaway)}</td>
-            </tr>'''
+            </tr>"""
+
+    serp_ads_rows = ""
+    if has_serp_ads:
+        for _, r in df_serp_ads.head(8).iterrows():
+            st_c = str(r.get("Competitor_Status", "")).replace("🟢 ", "").replace("🚨 ", "").replace("⚔️ ", "")
+            is_alert = "Conquesting" in st_c
+            serp_ads_rows += f"""<tr>
+                <td style="font-weight:bold;">{esc(r.get('Search_Query', ''))}</td>
+                <td style="font-weight:bold; color:{'#dc2626' if is_alert else '#004b93'};">{esc(st_c)}</td>
+                <td>{esc(r.get('Bidding_Domain', ''))}</td>
+                <td style="font-size:6.7pt;">{esc(r.get('Live_Ad_Headline', ''))}</td>
+            </tr>"""
 
     strengths = []
     weaknesses = []
@@ -4048,6 +4644,10 @@ def build_executive_dossier_html(
         opportunities.append("<strong>Enrich Thin Page Copy:</strong> Expand short pages to 500+ words with clear benefits, process steps, and buyer FAQs.")
         roadmap.append(("Priority 1 (High Impact)", "Expand Thin Page Copy", f"Add helpful descriptions, specifications, and FAQs to the {thin_cnt} pages under 300 words.", "Improves keyword relevance and organic rankings"))
 
+    if broken_only_cnt > 0:
+        weaknesses.append(f"<strong>Broken Internal Links ({broken_only_cnt} Dead Target(s)):</strong> Internal links pointing to 404/unreachable pages hurt user experience and crawl efficiency.")
+        roadmap.append(("Priority 1 (Quick Fix)", "Repair Broken Internal Links", f"Update or redirect the {broken_only_cnt} broken internal link targets identified in the link audit.", "Restores seamless navigation and link equity"))
+
     if has_can and dup_pairs_cnt > 0:
         weaknesses.append(f"<strong>Duplicate Page Copy ({dup_pairs_cnt} High-Overlap Pair(s)):</strong> Multiple URLs share near-identical text, causing them to compete against each other in Google.")
         opportunities.append("<strong>Consolidate Duplicate Variants:</strong> Use canonical tags or combine near-identical product variations into unified pages.")
@@ -4060,11 +4660,23 @@ def build_executive_dossier_html(
     else:
         strengths.append("<strong>Clean Page Headlines:</strong> All main H1 headings are properly spaced and readable.")
 
+    if miss_alt_cnt > 0:
+        weaknesses.append(f"<strong>Missing Image Alt Text ({miss_alt_cnt} of {total_imgs_cnt} Images):</strong> Images without alt descriptions miss image search traffic and reduce screen-reader accessibility.")
+        roadmap.append(("Priority 2 (SEO & WCAG)", "Add Descriptive Image Alt Text", f"Populate descriptive alt attributes across the {miss_alt_cnt} untagged images.", "Improves Google Image indexing and WCAG compliance"))
+
+    for sw in stack_weaknesses_list[:2]:
+        weaknesses.append(f"<strong>Tech Stack Finding ({esc(sw.get('Area', '').replace('⚡ ', '').replace('📊 ', '').replace('📈 ', '').replace('🎯 ', '').replace('🔍 ', '').replace('🤖 ', '').replace('🛡️ ', ''))}):</strong> {esc(sw.get('Finding', ''))}")
+        roadmap.append(("Priority 2 (Tech Stack)", esc(sw.get("Area", "Stack Optimization").split(" ", 1)[-1]), esc(sw.get("Recommendation", "")), "Improves tracking accuracy and page speed"))
+
     if has_llms:
         strengths.append("<strong>AI Directory Published (<code>/llms.txt</code>):</strong> Active <code>llms.txt</code> file helps ChatGPT and Perplexity index your offerings.")
     else:
         weaknesses.append("<strong>Missing <code>/llms.txt</code> File:</strong> Publishing a plain-text <code>llms.txt</code> guide helps AI search engines discover your key pages.")
         opportunities.append("<strong>Publish <code>/llms.txt</code> at Domain Root:</strong> Upload the generated <code>llms.txt</code> file from Tab 1.")
+
+    if conquest_cnt > 0:
+        threats.append(f"<strong>Competitors Bidding on Your Brand ({conquest_cnt} Paid Ad(s)):</strong> Rivals are running sponsored ads on your branded Google searches.")
+        roadmap.append(("Priority 1 (Paid Defense)", "Protect Branded Search Terms", "Run exact-match brand defense ads with sitelinks to prevent competitors from intercepting high-intent visitors.", "Protects branded conversion traffic"))
 
     if has_serp and invis_pct > 40:
         weaknesses.append(f"<strong>Low Non-Branded Google Visibility ({invis_pct:.0f}% Off Page 1–2):</strong> Buyers searching general industry terms frequently see competitors before {esc(brand_display)}.")
@@ -4077,7 +4689,7 @@ def build_executive_dossier_html(
 
     if has_ads and search_ads_cnt > 0:
         strengths.append(f"<strong>Active Google Search Ads ({search_ads_cnt} Text Ads):</strong> Paid search is actively capturing bottom-of-funnel buyer queries.")
-        opportunities.append("<strong>Refresh Long-Running Ad Copy:</strong> Test new ad variations alongside 600+ day evergreen search ads to improve click-through rates.")
+        opportunities.append("<strong>Refresh Long-Running Ad Copy:</strong> Test new ad variations alongside evergreen search ads to improve click-through rates.")
     else:
         opportunities.append("<strong>Capture High-Intent Search Demand:</strong> Run targeted Google Search Ads on commercial buyer terms while organic rankings grow.")
 
@@ -4090,29 +4702,29 @@ def build_executive_dossier_html(
         strengths.append(f"<strong>Strong Website Security ({esc(sec_grade)}):</strong> HTTPS transport security and safe browsing checks passed.")
 
     if avg_a11y < 85:
-        roadmap.append(("Priority 3 (Compliance)", "Improve Page Accessibility (WCAG)", "Ensure &lt;html lang=\"en\"&gt; is set, add descriptive image alt text, and label buttons.", "Improves usability for screen readers and search quality"))
+        roadmap.append(("Priority 3 (Compliance)", "Improve Page Accessibility (WCAG)", 'Ensure &lt;html lang="en"&gt; is set, add descriptive image alt text, and label buttons.', "Improves usability for screen readers and search quality"))
 
-    w_html = "".join([f"<li>{x}</li>" for x in weaknesses[:5]])
+    w_html = "".join([f"<li>{x}</li>" for x in weaknesses[:6]])
     o_html = "".join([f"<li>{x}</li>" for x in opportunities[:5]])
-    s_html = "".join([f"<li>{x}</li>" for x in strengths[:4]])
+    s_html = "".join([f"<li>{x}</li>" for x in strengths[:5]])
     t_html = "".join([f"<li>{x}</li>" for x in threats[:4]]) or "<li><strong>Competitive Search Pressure:</strong> Established competitors invest heavily in educational content and structured data.</li>"
 
     roadmap_rows = ""
-    for prio, init_name, act_txt, imp_txt in roadmap[:7]:
+    for prio, init_name, act_txt, imp_txt in roadmap[:8]:
         p_col = "#dc2626" if "Priority 1" in prio else ("#004b93" if "Priority 2" in prio else "#16a34a")
-        roadmap_rows += f'''<tr>
+        roadmap_rows += f"""<tr>
             <td style="color:{p_col}; font-weight:bold;">{esc(prio)}</td>
             <td style="font-weight:bold;">{esc(init_name)}</td>
             <td>{act_txt}</td>
             <td>{esc(imp_txt)}</td>
-        </tr>'''
+        </tr>"""
 
     conditional_sections_html = ""
 
-    if has_eq or has_can:
+    if has_eq or has_can or has_broken:
         eq_block = ""
         if has_eq:
-            eq_block = f'''
+            eq_block = f"""
             <div class="sub-header">Internal Link Flow Across Reviewed Pages</div>
             <table>
                 <thead>
@@ -4124,11 +4736,11 @@ def build_executive_dossier_html(
                     </tr>
                 </thead>
                 <tbody>{equity_rows}</tbody>
-            </table>'''
+            </table>"""
 
         can_block = ""
         if has_can:
-            can_block = f'''
+            can_block = f"""
             <div class="sub-header">Duplicate &amp; Overlapping Page Copy Detected</div>
             <p class="intro-note">Pages with 60%+ identical copy compete against each other in Google search results. Consolidating variants or adding canonical tags resolves this overlap.</p>
             <table>
@@ -4141,21 +4753,74 @@ def build_executive_dossier_html(
                     </tr>
                 </thead>
                 <tbody>{can_rows}</tbody>
-            </table>'''
+            </table>"""
 
-        conditional_sections_html += f'''
+        brk_block = ""
+        if has_broken:
+            brk_block = f"""
+            <div class="sub-header">Internal Link Health &amp; Redirect Diagnostics</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:24%;">Link Status</th>
+                        <th style="width:32%;">Target URL</th>
+                        <th style="width:18%;">Anchor Text</th>
+                        <th style="width:26%;">Found On Page</th>
+                    </tr>
+                </thead>
+                <tbody>{broken_rows}</tbody>
+            </table>"""
+
+        conditional_sections_html += f"""
         <div class="page-break"></div>
-        <div class="section-header">Internal Linking &amp; Content Duplication Review</div>
-        <p class="intro-note">Reviewing how internal links connect your pages and identifying duplicate product/category copy that can dilute search rankings.</p>
+        <div class="section-header">Internal Linking, Redirects &amp; Content Duplication Review</div>
+        <p class="intro-note">Reviewing how internal links connect your pages, checking for broken destinations, and identifying duplicate copy that can dilute search rankings.</p>
         {eq_block}
         {can_block}
-        '''
+        {brk_block}
+        """
 
-    if has_serp or has_aeo or has_ads:
+    if has_brand_serp or has_serp or has_aeo or has_ads or has_serp_ads:
+        brand_serp_block = ""
+        if has_brand_serp:
+            sl_note = ""
+            if brand_sitelinks:
+                sl_titles_str = ", ".join([esc(s.get("Sitelink_Title", "")) for s in brand_sitelinks[:6] if s.get("Sitelink_Title")])
+                sl_note = f'<p class="intro-note"><strong>Most Valuable Pages Highlighted by Google (Branded Sitelinks):</strong> {sl_titles_str}</p>'
+            brand_serp_block = f"""
+            <div class="sub-header">Branded Google Search Results &amp; Top Entry Pages</div>
+            {sl_note}
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:10%; text-align:center;">Rank</th>
+                        <th style="width:20%;">Ownership</th>
+                        <th style="width:36%;">Title Shown in Google</th>
+                        <th style="width:34%;">Displayed URL</th>
+                    </tr>
+                </thead>
+                <tbody>{brand_serp_rows}</tbody>
+            </table>"""
+
         serp_block = ""
         if has_serp:
-            serp_block = f'''
-            <div class="sub-header">Google Search Rankings (US Index — {len(valid_r)} Queries Checked)</div>
+            sov_table = ""
+            if sov_rows_html:
+                sov_table = f"""
+                <div class="sub-header">Page-1 Competitor Share-of-Voice (SOV) Leaderboard</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:44%;">Domain</th>
+                            <th style="width:18%; text-align:center;">Page-1 Hits</th>
+                            <th style="width:20%; text-align:center;">Share of Voice</th>
+                            <th style="width:18%; text-align:center;">Avg. Position</th>
+                        </tr>
+                    </thead>
+                    <tbody>{sov_rows_html}</tbody>
+                </table>"""
+            serp_block = f"""
+            <div class="sub-header">Non-Branded Google Search Rankings (US Index — {len(valid_r)} Queries)</div>
             <table>
                 <thead>
                     <tr>
@@ -4166,11 +4831,26 @@ def build_executive_dossier_html(
                     </tr>
                 </thead>
                 <tbody>{serp_rows}</tbody>
-            </table>'''
+            </table>
+            {sov_table}"""
 
         aeo_block = ""
         if has_aeo:
-            aeo_block = f'''
+            pr_sub = ""
+            if aeo_pr_rows:
+                pr_sub = f"""
+                <div class="sub-header">Top Third-Party Sources Cited by AI (Digital PR Targets)</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:34%;">Cited Source Domain</th>
+                            <th style="width:18%; text-align:center;">AI Citations</th>
+                            <th style="width:48%;">Recommended Outreach Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>{aeo_pr_rows}</tbody>
+                </table>"""
+            aeo_block = f"""
             <div class="sub-header">Generative AI Answer Visibility (Google AI Overviews — {len(valid_a)} Prompts)</div>
             <table>
                 <thead>
@@ -4182,75 +4862,240 @@ def build_executive_dossier_html(
                     </tr>
                 </thead>
                 <tbody>{aeo_rows}</tbody>
-            </table>'''
+            </table>
+            {pr_sub}"""
 
         ads_block = ""
-        if has_ads:
-            ads_block = f'''
-            <div class="sub-header">Active Google Ads Portfolio Summary ({len(df_ads)} Tracked Creatives)</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width:26%;">Ad Channel &amp; Format</th>
-                        <th style="width:26%;">Active Flight &amp; Dates</th>
-                        <th style="width:20%;">Longevity Tier</th>
-                        <th style="width:28%;">Performance Insight</th>
-                    </tr>
-                </thead>
-                <tbody>{ads_rows}</tbody>
-            </table>'''
+        if has_ads or has_serp_ads:
+            trans_table = ""
+            if has_ads:
+                trans_table = f"""
+                <div class="sub-header">Active Google Ads Portfolio Summary ({len(df_ads)} Tracked Creatives)</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:26%;">Ad Channel &amp; Format</th>
+                            <th style="width:26%;">Active Flight &amp; Dates</th>
+                            <th style="width:20%;">Longevity Tier</th>
+                            <th style="width:28%;">Performance Insight</th>
+                        </tr>
+                    </thead>
+                    <tbody>{ads_rows}</tbody>
+                </table>"""
+            conq_table = ""
+            if has_serp_ads:
+                conq_table = f"""
+                <div class="sub-header">Live Google Search Sponsored Ads &amp; Competitor Conquesting</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:24%;">Search Query</th>
+                            <th style="width:24%;">Status</th>
+                            <th style="width:20%;">Advertiser</th>
+                            <th style="width:32%;">Live Ad Headline</th>
+                        </tr>
+                    </thead>
+                    <tbody>{serp_ads_rows}</tbody>
+                </table>"""
+            ads_block = trans_table + conq_table
 
-        conditional_sections_html += f'''
+        conditional_sections_html += f"""
         <div class="page-break"></div>
         <div class="section-header">Search Visibility, AI Answers &amp; Paid Media Presence</div>
-        <p class="intro-note">Evaluating how prospective customers discover {esc(brand_display)} across traditional Google search results, conversational AI summaries, and paid search placements.</p>
+        <p class="intro-note">Evaluating how prospective customers discover {esc(brand_display)} across branded and non-branded Google searches, conversational AI summaries, and paid search placements.</p>
+        {brand_serp_block}
         {serp_block}
         {aeo_block}
         {ads_block}
-        '''
+        """
+
+    if has_offpage or has_first_party:
+        offpage_block = ""
+        if has_offpage:
+            mentions_table = ""
+            if not df_mentions.empty:
+                m_rows = ""
+                for _, rm in df_mentions.head(6).iterrows():
+                    m_rows += f"""<tr>
+                        <td style="font-weight:bold;">{esc(rm.get('Source_Website', ''))}</td>
+                        <td style="font-size:6.8pt;">{esc(rm.get('Article_Title', ''))}</td>
+                        <td style="word-break:break-all; font-size:6.5pt; font-family:monospace;">{esc(clean_display_url(rm.get('Target_Outreach_URL', '')))}</td>
+                    </tr>"""
+                mentions_table = f"""
+                <div class="sub-header">Unlinked Brand Mentions Found on the Web (Link Reclamation Targets)</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:26%;">Website</th>
+                            <th style="width:38%;">Article / Page Title</th>
+                            <th style="width:36%;">Outreach URL</th>
+                        </tr>
+                    </thead>
+                    <tbody>{m_rows}</tbody>
+                </table>"""
+            offpage_block = f"""
+            <div class="sub-header">Domain Authority &amp; Backlink Profile (Crawly Index)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:25%;">Domain Authority</th>
+                        <th style="width:25%;">Referring Websites</th>
+                        <th style="width:25%;">Total Backlinks</th>
+                        <th style="width:25%;">Authority Tier</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="font-weight:bold; color:#004b93;">{da_val} / 100</td>
+                        <td>{ref_dom:,}</td>
+                        <td>{tot_bl:,}</td>
+                        <td>{esc(crawly_data.get('authority_tier', 'Evaluated'))}</td>
+                    </tr>
+                </tbody>
+            </table>
+            {mentions_table}"""
+
+        fp_block = ""
+        if has_first_party:
+            fp_rows = ""
+            for item_fp in first_party_summary:
+                fp_rows += f"""<tr>
+                    <td style="font-weight:bold;">{esc(item_fp.get('Source', ''))}</td>
+                    <td>{esc(item_fp.get('Metric_1', ''))}</td>
+                    <td>{esc(item_fp.get('Metric_2', ''))}</td>
+                    <td>{esc(item_fp.get('Metric_3', ''))}</td>
+                </tr>"""
+            qw_table = ""
+            if not df_gsc_quickwins.empty:
+                qw_r = ""
+                cols_qw = list(df_gsc_quickwins.columns)
+                for _, rqw in df_gsc_quickwins.head(8).iterrows():
+                    qw_r += f"""<tr>
+                        <td style="font-weight:bold;">{esc(rqw[cols_qw[0]])}</td>
+                        <td style="text-align:center;">{esc(rqw[cols_qw[1]])}</td>
+                        <td style="text-align:center;">{esc(rqw[cols_qw[2]])}</td>
+                        <td style="text-align:center;">{esc(rqw[cols_qw[3]])}</td>
+                    </tr>"""
+                qw_table = f"""
+                <div class="sub-header">First-Party Search Console Page-2 Quick-Win Keywords</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:46%;">Search Query</th>
+                            <th style="width:18%; text-align:center;">Clicks</th>
+                            <th style="width:18%; text-align:center;">Impressions</th>
+                            <th style="width:18%; text-align:center;">Avg. Position</th>
+                        </tr>
+                    </thead>
+                    <tbody>{qw_r}</tbody>
+                </table>"""
+            fp_block = f"""
+            <div class="sub-header">First-Party Analytics Summary (Search Console / GA4)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:28%;">Data Source</th>
+                        <th style="width:24%;">Primary Volume</th>
+                        <th style="width:24%;">Secondary Metric</th>
+                        <th style="width:24%;">Performance Note</th>
+                    </tr>
+                </thead>
+                <tbody>{fp_rows}</tbody>
+            </table>
+            {qw_table}"""
+
+        conditional_sections_html += f"""
+        <div class="page-break"></div>
+        <div class="section-header">Off-Page Authority &amp; First-Party Performance Data</div>
+        <p class="intro-note">External backlink authority, unlinked brand mentions, and first-party traffic data uploaded for {esc(brand_display)}.</p>
+        {offpage_block}
+        {fp_block}
+        """
 
     cwv_block = ""
-    if has_cwv:
-        cwv_block = f'''
-        <div class="sub-header">Mobile Speed &amp; Core Web Vitals (Single-Page Audit: {esc(cwv_res.get("Tested_URL", target_name))})</div><p class="intro-note">Note: Lab Core Web Vitals (Performance Score, LCP, TBT, and CLS) measure the specific page URL listed above rather than every page across the site.</p>
-        <table>
-            <thead>
+    if has_cwv or not df_cwv_batch.empty:
+        single_cwv_html = ""
+        if has_cwv:
+            desk_row = ""
+            if cwv_desktop_res and "Score" in cwv_desktop_res:
+                d_sc = int(cwv_desktop_res.get("Score", 0))
+                desk_row = f"""
                 <tr>
-                    <th style="width:28%;">Speed Metric</th>
-                    <th style="width:20%; text-align:center;">Measured Value</th>
-                    <th style="width:20%; text-align:center;">Target Benchmark</th>
-                    <th style="width:32%;">What This Means for Visitors</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><strong>Mobile Performance Score</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:{badge_color(cwv_score)};">{cwv_score} / 100</td>
+                    <td><strong>Desktop Performance Score (Same URL)</strong></td>
+                    <td style="text-align:center; font-weight:bold; color:{badge_color(d_sc)};">{d_sc} / 100</td>
                     <td style="text-align:center;">&gt; 90 / 100</td>
-                    <td>{'Fast mobile experience.' if cwv_score >= 85 else 'Visual load delays are slowing mobile visitors.'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Main Visual Load Time (LCP)</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:{'#16a34a' if lcp_numeric <= 2.5 else '#dc2626'};">{esc(raw_lcp)}</td>
-                    <td style="text-align:center;">&lt; 2.5 seconds</td>
-                    <td>{'Main banner loads quickly.' if lcp_numeric <= 2.5 else 'Visitors wait too long for the main image/headline to appear.'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Script Responsiveness (TBT)</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:{'#16a34a' if tbt_is_good else '#b45309'};">{esc(raw_tbt)}</td>
-                    <td style="text-align:center;">&lt; 300 ms</td>
-                    <td>{'Page responds smoothly to taps.' if tbt_is_good else 'Background tracking scripts slightly delay tap responsiveness.'}</td>
-                </tr>
-                <tr>
-                    <td><strong>Visual Layout Stability (CLS)</strong></td>
-                    <td style="text-align:center; font-weight:bold; color:#16a34a;">{esc(cwv_res.get('CLS', '0.000'))}</td>
-                    <td style="text-align:center;">&lt; 0.100</td>
-                    <td>Page elements stay steady without jumping during load.</td>
-                </tr>
-            </tbody>
-        </table>'''
+                    <td>Desktop LCP: {esc(cwv_desktop_res.get('LCP', 'N/A'))} | TBT: {esc(cwv_desktop_res.get('TBT', 'N/A'))}</td>
+                </tr>"""
+            single_cwv_html = f"""
+            <div class="sub-header">Mobile &amp; Desktop Speed (Single-Page Audit: {esc(clean_display_url(cwv_res.get("Tested_URL", target_name)))})</div>
+            <p class="intro-note">Note: Lab Core Web Vitals (Performance Score, LCP, TBT, and CLS) measure the specific page URL listed above rather than every page across the site.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:28%;">Speed Metric</th>
+                        <th style="width:20%; text-align:center;">Measured Value</th>
+                        <th style="width:20%; text-align:center;">Target Benchmark</th>
+                        <th style="width:32%;">What This Means for Visitors</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Mobile Performance Score</strong></td>
+                        <td style="text-align:center; font-weight:bold; color:{badge_color(cwv_score)};">{cwv_score} / 100</td>
+                        <td style="text-align:center;">&gt; 90 / 100</td>
+                        <td>{'Fast mobile experience.' if cwv_score >= 85 else 'Visual load delays are slowing mobile visitors.'}</td>
+                    </tr>
+                    {desk_row}
+                    <tr>
+                        <td><strong>Main Visual Load Time (Mobile LCP)</strong></td>
+                        <td style="text-align:center; font-weight:bold; color:{'#16a34a' if lcp_numeric <= 2.5 else '#dc2626'};">{esc(raw_lcp)}</td>
+                        <td style="text-align:center;">&lt; 2.5 seconds</td>
+                        <td>{'Main banner loads quickly.' if lcp_numeric <= 2.5 else 'Visitors wait too long for the main image/headline to appear.'}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Script Responsiveness (Mobile TBT)</strong></td>
+                        <td style="text-align:center; font-weight:bold; color:{'#16a34a' if tbt_is_good else '#b45309'};">{esc(raw_tbt)}</td>
+                        <td style="text-align:center;">&lt; 300 ms</td>
+                        <td>{'Page responds smoothly to taps.' if tbt_is_good else 'Background tracking scripts slightly delay tap responsiveness.'}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Visual Layout Stability (CLS)</strong></td>
+                        <td style="text-align:center; font-weight:bold; color:#16a34a;">{esc(cwv_res.get('CLS', '0.000'))}</td>
+                        <td style="text-align:center;">&lt; 0.100</td>
+                        <td>Page elements stay steady without jumping during load.</td>
+                    </tr>
+                </tbody>
+            </table>"""
 
-    summary_rows = f'''
+        batch_cwv_html = ""
+        if not df_cwv_batch.empty:
+            b_rows = ""
+            for _, rb in df_cwv_batch.iterrows():
+                ms = int(rb.get("Mobile_Score", 0))
+                b_rows += f"""<tr>
+                    <td style="word-break:break-all; font-size:6.6pt; font-family:monospace;">{esc(clean_display_url(rb.get('Tested_Template_URL', '')))}</td>
+                    <td style="text-align:center; font-weight:bold; color:{badge_color(ms)};">{ms}/100</td>
+                    <td style="text-align:center;">{esc(rb.get('LCP', 'N/A'))}</td>
+                    <td style="text-align:center;">{esc(rb.get('TBT', 'N/A'))}</td>
+                    <td style="text-align:center;">{esc(rb.get('CLS', 'N/A'))}</td>
+                </tr>"""
+            batch_cwv_html = f"""
+            <div class="sub-header">Multi-Template Mobile Speed Comparison</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:44%;">Tested Page Template URL</th>
+                        <th style="width:14%; text-align:center;">Score</th>
+                        <th style="width:14%; text-align:center;">LCP</th>
+                        <th style="width:14%; text-align:center;">TBT</th>
+                        <th style="width:14%; text-align:center;">CLS</th>
+                    </tr>
+                </thead>
+                <tbody>{b_rows}</tbody>
+            </table>"""
+        cwv_block = single_cwv_html + batch_cwv_html
+
+    summary_rows = f"""
         <tr>
             <td><strong>Pages Reviewed in This Audit</strong></td>
             <td>{total_pages} Page(s)</td>
@@ -4270,6 +5115,12 @@ def build_executive_dossier_html(
             <td style="color:{'#16a34a' if thin_cnt == 0 else '#dc2626'}; font-weight:bold;">{'✓ Substantial Copy' if thin_cnt == 0 else 'Expand Short Pages'}</td>
         </tr>
         <tr>
+            <td><strong>Image Alt Text Coverage</strong></td>
+            <td>{total_imgs_cnt - miss_alt_cnt}/{total_imgs_cnt} Tagged ({miss_alt_cnt} Missing)</td>
+            <td>100% Tagged</td>
+            <td style="color:{'#16a34a' if miss_alt_cnt == 0 else '#b45309'}; font-weight:bold;">{'✓ Complete' if miss_alt_cnt == 0 else 'Add Image Alt Text'}</td>
+        </tr>
+        <tr>
             <td><strong>AI Crawler Directory (<code>/llms.txt</code>)</strong></td>
             <td>{'Active (HTTP 200)' if has_llms else 'Not Published (404)'}</td>
             <td>Published at Root</td>
@@ -4280,42 +5131,42 @@ def build_executive_dossier_html(
             <td>{avg_a11y} / 100</td>
             <td>&gt; 90 / 100</td>
             <td style="color:{'#16a34a' if avg_a11y >= 85 else '#b45309'}; font-weight:bold;">{'✓ Compliant' if avg_a11y >= 85 else 'Needs Minor Fixes'}</td>
-        </tr>'''
+        </tr>"""
 
     if has_serp:
-        summary_rows += f'''
+        summary_rows += f"""
         <tr>
             <td><strong>Google Organic Search Visibility</strong></td>
             <td>{100.0 - invis_pct:.0f}% on Page 1–2 ({invis_pct:.0f}% Off)</td>
             <td>&gt; 80% on Page 1–2</td>
             <td style="color:{'#16a34a' if invis_pct <= 20 else '#dc2626'}; font-weight:bold;">{'✓ Strong Visibility' if invis_pct <= 20 else 'Growth Opportunity'}</td>
-        </tr>'''
+        </tr>"""
     if has_aeo:
-        summary_rows += f'''
+        summary_rows += f"""
         <tr>
             <td><strong>AI Answer Citations (Google AIO)</strong></td>
             <td>{100.0 - aeo_loss_pct:.0f}% Cited ({aeo_loss_pct:.0f}% Omitted)</td>
             <td>&gt; 50% Cited</td>
             <td style="color:{'#16a34a' if aeo_loss_pct <= 40 else '#dc2626'}; font-weight:bold;">{'✓ Cited by AI' if aeo_loss_pct <= 40 else 'Needs FAQ &amp; Q&amp;A Copy'}</td>
-        </tr>'''
+        </tr>"""
     if has_cwv:
-        summary_rows += f'''
+        summary_rows += f"""
         <tr>
-            <td><strong>Mobile Visual Load Time (LCP)</strong></td>
+            <td><strong>Mobile Visual Load Time (Single URL)</strong></td>
             <td>{esc(raw_lcp)}</td>
             <td>&lt; 2.5 seconds</td>
             <td style="color:{'#16a34a' if lcp_numeric <= 2.5 else '#dc2626'}; font-weight:bold;">{'✓ Fast' if lcp_numeric <= 2.5 else 'Compress Hero Images'}</td>
-        </tr>'''
+        </tr>"""
     if da_val:
-        summary_rows += f'''
+        summary_rows += f"""
         <tr>
             <td><strong>Domain Authority (Crawly Index)</strong></td>
             <td>{da_val} / 100 ({ref_dom:,} Referring Sites)</td>
             <td>&gt; 35 / 100</td>
             <td style="color:{'#16a34a' if int(da_val) >= 35 else '#b45309'}; font-weight:bold;">{'✓ Established' if int(da_val) >= 35 else 'Build Industry Links'}</td>
-        </tr>'''
+        </tr>"""
 
-    pdf_html = f'''<!DOCTYPE html>
+    pdf_html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -4505,6 +5356,8 @@ def build_executive_dossier_html(
         This report evaluates how easily customers and AI search engines (Google, ChatGPT, and Perplexity) can find, understand, and trust the audited pages on <strong>{esc(clean_host)}</strong>. All findings below are based on live crawl and search diagnostics for this page group.
     </p>
 
+    {progress_banner_html}
+
     <div class="score-row">
         <div class="score-card">
             <div class="score-val" style="color:{badge_color(score_seo)};">{score_seo}</div>
@@ -4549,35 +5402,38 @@ def build_executive_dossier_html(
 
     <div class="page-break"></div>
 
-    <!-- PAGE 2: PAGE-BY-PAGE CONTENT, METADATA & SCHEMA REVIEW -->
-    <div class="section-header">Page-by-Page Content, Metadata &amp; Schema Review</div>
+    <!-- PAGE 2: PAGE-BY-PAGE CONTENT, METADATA, SCHEMA & TECH STACK REVIEW -->
+    <div class="section-header">Page-by-Page Content, Metadata, Schema &amp; Tech Stack Review</div>
     <p class="intro-note">
-        Each page below was checked for word count depth, Meta Title/Description completeness, headline spacing, structured product/FAQ schema tags, and accessibility compliance.
+        Each page below was checked for word count depth, Meta Title/Description completeness, headline spacing, image alt text coverage, structured product/FAQ schema tags, and accessibility compliance.
     </p>
 
     <table>
         <thead>
             <tr>
-                <th style="width:42%;">Audited Page URL</th>
-                <th style="width:10%; text-align:center;">Words</th>
-                <th style="width:12%; text-align:center;">Meta Tags</th>
-                <th style="width:12%; text-align:center;">Headlines</th>
-                <th style="width:12%; text-align:center;">Schema</th>
-                <th style="width:12%; text-align:center;">WCAG</th>
+                <th style="width:38%;">Audited Page URL</th>
+                <th style="width:9%; text-align:center;">Words</th>
+                <th style="width:11%; text-align:center;">Meta Tags</th>
+                <th style="width:10%; text-align:center;">Headlines</th>
+                <th style="width:10%; text-align:center;">Img Alt</th>
+                <th style="width:11%; text-align:center;">Schema</th>
+                <th style="width:11%; text-align:center;">WCAG</th>
             </tr>
         </thead>
         <tbody>
-            {crawl_rows if crawl_rows else '<tr><td colspan="6">No pages crawled.</td></tr>'}
+            {crawl_rows if crawl_rows else '<tr><td colspan="7">No pages crawled.</td></tr>'}
         </tbody>
     </table>
 
-    <div class="sub-header">Technical Trust, Security &amp; AI Crawler Readiness</div>
+    {tech_stack_html}
+
+    <div class="sub-header">Technical Trust, Security &amp; AI Crawler Governance</div>
     <table>
         <thead>
             <tr>
                 <th style="width:36%;">Technical Check</th>
-                <th style="width:24%;">Status</th>
-                <th style="width:40%;">Why It Matters</th>
+                <th style="width:28%;">Status</th>
+                <th style="width:36%;">Why It Matters</th>
             </tr>
         </thead>
         <tbody>
@@ -4596,6 +5452,7 @@ def build_executive_dossier_html(
                 <td>{'✓ Active (HTTP 200)' if has_llms else 'Not Published (404)'}</td>
                 <td>Gives AI assistants a clean summary of your pages and services.</td>
             </tr>
+            {ai_bots_row_html}
             <tr>
                 <td><strong>Google Knowledge Graph Entity</strong></td>
                 <td>{esc(kg_info.get('Recognized', 'Not Checked'))}</td>
@@ -4652,23 +5509,27 @@ def build_executive_dossier_html(
     </div>
 
 </body>
-</html>'''
+</html>"""
     return weasyprint.HTML(string=pdf_html).write_pdf()
 
 
+# =============================================================================
+# TAB 13: CLIENT-READY PDF & EXCEL DELIVERABLES
+# =============================================================================
 with tab_report:
-    st.subheader("Client-Ready PDF Deliverables (Connext Global Identity)")
-    st.markdown('''
+    st.subheader("Client-Ready PDF & Excel Deliverables (Connext Global Identity)")
+    st.markdown("""
     <div class="guide-box">
-        <strong>🎯 Tailored for Multi-Section Client Audits:</strong><br>
+        <strong>🎯 All 12 Audit Tabs Integrated Automatically:</strong><br>
         • <strong>Option A (1-Page Executive Brief):</strong> A clean 1-page summary tailored specifically to the audited pages—ideal when sending separate reports for different sections of a client's website.<br>
-        • <strong>Option B (Full Technical Report):</strong> Includes page-by-page diagnostics, search &amp; AI visibility (when tested), and a prioritized action plan—automatically omitting empty sections so every page adds value.
+        • <strong>Option B (Full Technical &amp; Search Report PDF):</strong> Consolidates On-Page SEO, Metadata, Image Alt Text, Installed Tech Stack, Robots/AI Bots, Internal Linking, Duplicate Copy, Branded &amp; Non-Branded SERP + SOV, Generative AEO, Paid Ads + Conquesting, Mobile/Desktop Speed, Backlinks, and First-Party Analytics.<br>
+        • <strong>Option C (Master Multi-Tab Excel Workbook .xlsx):</strong> Exports every raw dataset into a styled, multi-worksheet Excel workbook for engineering and analytics teams.
     </div>
-    ''', unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
     df_c = st.session_state.get("df_crawl", pd.DataFrame())
     if df_c.empty:
-        st.warning("No audit data available yet. Please run Tab 1 (Tech, Content & SEO) first before generating PDF reports.")
+        st.warning("No audit data available yet. Please run Tab 1 (Tech, Content & SEO) first before generating reports.")
     else:
         target_name = st.session_state.get("target_domain", "https://alphacord.com")
         clean_host_default = urlparse(target_name).netloc.replace("www.", "") or target_name
@@ -4710,7 +5571,14 @@ with tab_report:
                             logo_url=safe_logo,
                             crawly_data=st.session_state.get("crawly_data", {}),
                             section_label=custom_section_label,
-                            client_name=custom_client_name
+                            client_name=custom_client_name,
+                            df_serp_ads=st.session_state.get("df_serp_ads", pd.DataFrame()),
+                            df_brand_serp=st.session_state.get("df_brand_serp", pd.DataFrame()),
+                            brand_sitelinks=st.session_state.get("brand_sitelinks", []),
+                            df_broken_links=st.session_state.get("df_broken_links", pd.DataFrame()),
+                            robots_data=st.session_state.get("robots_audit_data", {}),
+                            df_mentions=st.session_state.get("df_mentions", pd.DataFrame()),
+                            first_party_summary=st.session_state.get("first_party_summary", [])
                         )
                         st.session_state["compiled_summary_pdf_bytes"] = summary_pdf_bytes
                         st.session_state["compiled_summary_filename"] = f"{clean_host_default}_{safe_slug}_executive_brief.pdf"
@@ -4751,7 +5619,18 @@ with tab_report:
                             logo_url=safe_logo,
                             crawly_data=st.session_state.get("crawly_data", {}),
                             section_label=custom_section_label,
-                            client_name=custom_client_name
+                            client_name=custom_client_name,
+                            df_serp_ads=st.session_state.get("df_serp_ads", pd.DataFrame()),
+                            df_brand_serp=st.session_state.get("df_brand_serp", pd.DataFrame()),
+                            brand_sitelinks=st.session_state.get("brand_sitelinks", []),
+                            cwv_desktop_res=st.session_state.get("cwv_desktop_metrics", {}),
+                            df_cwv_batch=st.session_state.get("df_cwv_batch", pd.DataFrame()),
+                            df_broken_links=st.session_state.get("df_broken_links", pd.DataFrame()),
+                            robots_data=st.session_state.get("robots_audit_data", {}),
+                            df_mentions=st.session_state.get("df_mentions", pd.DataFrame()),
+                            first_party_summary=st.session_state.get("first_party_summary", []),
+                            df_gsc_quickwins=st.session_state.get("df_gsc_quickwins", pd.DataFrame()),
+                            df_ga4_top_pages=st.session_state.get("df_ga4_top_pages", pd.DataFrame())
                         )
                         st.session_state["compiled_dossier_pdf_bytes"] = dossier_pdf_bytes
                         st.session_state["compiled_dossier_filename"] = f"{clean_host_default}_{safe_slug}_technical_report.pdf"
@@ -4783,7 +5662,14 @@ with tab_report:
                             df_ads=st.session_state.get("df_ads", pd.DataFrame()),
                             df_broken=st.session_state.get("df_broken_links", pd.DataFrame()),
                             brand_name=custom_client_name,
-                            scope_label=custom_section_label
+                            scope_label=custom_section_label,
+                            df_serp_ads=st.session_state.get("df_serp_ads", pd.DataFrame()),
+                            df_brand_serp=st.session_state.get("df_brand_serp", pd.DataFrame()),
+                            df_cwv_batch=st.session_state.get("df_cwv_batch", pd.DataFrame()),
+                            crawly_data=st.session_state.get("crawly_data", {}),
+                            df_mentions=st.session_state.get("df_mentions", pd.DataFrame()),
+                            robots_data=st.session_state.get("robots_audit_data", {}),
+                            first_party_summary=st.session_state.get("first_party_summary", [])
                         )
                         st.session_state["master_xlsx_bytes"] = xlsx_bytes
                         st.session_state["master_xlsx_filename"] = f"{clean_host_default}_{safe_slug}_master_audit.xlsx"
